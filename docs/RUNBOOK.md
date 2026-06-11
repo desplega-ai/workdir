@@ -7,7 +7,7 @@ bring-up — the scripts in `deploy/` automate it.
 ## Topology
 
 ```
-  Browser ── workdir.dev (Cloudflare Worker: site, auth, API keys)  ── cloud/
+  Browser ── workdir.dev (Cloudflare Worker: site, auth, API keys)  ── workdir-client repo
                  │  admin API (provision/revoke keys by hash)
                  ▼
   SDK / curl ── api.workdir.dev ──[Cloudflare Tunnel]──▶ Hetzner node :8080
@@ -16,7 +16,7 @@ bring-up — the scripts in `deploy/` automate it.
                                                           └─ Firecracker microVMs (tap → wdbr0 → NAT)
 ```
 
-- **Control panel** (`cloud/`): Cloudflare Workers + D1. Issues API keys, pushes
+- **Control panel** (separate `workdir-client` repo): Cloudflare Workers + D1. Issues API keys, pushes
   their SHA-256 hash to the daemon's admin API.
 - **Daemon** (this repo, `workdir` binary): control plane + host agent on one
   dedicated server. Binds `127.0.0.1:8080`; reached publicly only via the
