@@ -72,14 +72,29 @@ returns an empty response (the process dies) even after passing chroot-relative
 paths. The benchmark harness was the canary that caught this on throwaway VMs,
 with zero impact to real sandboxes — which is exactly why standby ships gated.
 
-**Open blocker before standby/fork can be enabled in production:** the jailer
-snapshot path needs a focused pass — Firecracker is chrooted, so the mem-file
-path/permissions and the restore relaunch (re-enter the jailer chroot vs. the
-current unchrooted relaunch) must be made jailer-correct and validated via the
-harness. Related housekeeping: `delete()` leaks per-VM jail directories under the
-jailer (disk-only, reflink-cheap). All snapshot-based features (standby, fork,
-the `/snapshot` endpoint) share this jailer-path work; they work in the mock
-runtime and direct-launch Firecracker today.
+**Open blocker before standby/fork can be enabled in production:** under the
+jailer, `PUT /snapshot/create` makes Firecracker **die silently** (the API
+connection closes with no response/body; no snapshot or mem file is written). The
+guest boots and runs fine — only snapshot crashes. Investigated on the live node
+(Firecracker/Jailer v1.16.0) and **ruled out**:
+- seccomp (`--no-seccomp` applied, `Seccomp: 0` confirmed — still crashes);
+- `RLIMIT_FSIZE` (`Max file size: unlimited`);
+- cgroup OOM (`memory.max = max`, `oom_kill 0`);
+- segfault/OOM (nothing in `dmesg`).
+
+Chroot-relative snapshot paths were applied (so the chrooted Firecracker writes
+into the chroot it owns) but did not change the outcome. The remaining suspects
+are jailer-environment specifics (e.g. `RLIMIT_MEMLOCK` is 8 MB) or a KVM/mmap
+path; the next step is `strace -f` / a core dump on a *single* jailed Firecracker
+during snapshot, isolated from hot-pool churn (the warmer's concurrent boots
+pollute log capture) — i.e. offline debugging, not live-node canaries.
+
+Related housekeeping: `delete()` leaks per-VM jail directories under the jailer
+(disk-only, reflink-cheap). All snapshot-based features (standby, fork, the
+`/snapshot` endpoint) share this jailer-path work; they work in the mock runtime
+and on direct-launch Firecracker today. Standby remains **gated off** in
+production until this is fixed; the binary is otherwise a safe superset of the
+prior one (benchmark harness, better FC error reporting, opt-in fork).
 
 ## Phases
 
