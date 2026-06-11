@@ -500,6 +500,11 @@ impl Runtime for FirecrackerRuntime {
         "firecracker"
     }
 
+    fn image_available(&self, image_key: &str) -> bool {
+        // Curated images live at images_dir/<key>/rootfs.ext4.
+        self.images_dir.join(image_key).join("rootfs.ext4").exists()
+    }
+
     async fn prewarm(&self, spec: &VmSpec) -> Result<WarmVm> {
         // A warm VM is a fully booted, idle microVM kept paused-ready. We boot
         // it and leave the agent live; create() attaches and unpauses.

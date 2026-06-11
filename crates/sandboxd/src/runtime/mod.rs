@@ -102,6 +102,12 @@ pub struct PtySession {
 pub trait Runtime: Send + Sync {
     fn kind(&self) -> &'static str;
 
+    /// Whether this node can boot the given image right now (its rootfs is
+    /// present). The warmer uses this to skip pools for images not yet built.
+    fn image_available(&self, _image_key: &str) -> bool {
+        true
+    }
+
     /// Pre-boot a warm microVM for a hot pool. Returns its handle.
     async fn prewarm(&self, spec: &VmSpec) -> Result<WarmVm>;
 

@@ -30,6 +30,10 @@ const STYLES = `
     font-family:var(--sans); font-size:16px; line-height:1.6;
     -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
   }
+  body::after {
+    content:""; position:fixed; inset:0; z-index:2000; pointer-events:none; opacity:.26;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='0.05'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
   ::selection { background:var(--amber); color:#0a0908; }
   a { color:var(--amber); text-decoration:none; }
   a:hover { text-decoration:underline; text-underline-offset:3px; }
@@ -110,9 +114,16 @@ const STYLES = `
     color:var(--muted); display:flex; align-items:center; gap:12px; margin-bottom:20px;
   }
   .kicker b { color:var(--amber); font-weight:600; }
-  .kicker::after { content:""; height:1px; flex:1; background:var(--line); }
+  .kicker .kline { height:1px; flex:1; background:var(--line); }
+  .kicker .kidx { color:var(--faint); letter-spacing:.14em; }
 
-  section.block { padding:88px 0; border-top:1px solid var(--line); }
+  section.block { position:relative; padding:88px 0; border-top:1px solid var(--line); }
+  section.block::before, section.block::after {
+    content:"+"; position:absolute; top:-9.5px; font:400 13px/1 var(--mono);
+    color:#3a3526; pointer-events:none;
+  }
+  section.block::before { left:14px; }
+  section.block::after { right:14px; }
   .h2 { font:400 clamp(21px,2.9vw,31px)/1.25 var(--pixel); letter-spacing:.01em; margin:0 0 14px; }
   .lead { color:var(--body); font-size:16px; max-width:580px; margin:0; }
 
@@ -129,20 +140,40 @@ const STYLES = `
   .hero-bg {
     position:absolute; inset:0; pointer-events:none;
     background-image:
-      linear-gradient(rgba(237,233,222,.032) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(237,233,222,.032) 1px, transparent 1px);
-    background-size:54px 54px;
+      linear-gradient(rgba(237,233,222,.027) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(237,233,222,.027) 1px, transparent 1px);
+    background-size:32px 32px;
     -webkit-mask-image:radial-gradient(ellipse 95% 85% at 50% 0%, #000 25%, transparent 72%);
     mask-image:radial-gradient(ellipse 95% 85% at 50% 0%, #000 25%, transparent 72%);
   }
   .hero-bg::after {
-    content:""; position:absolute; inset:0;
-    background:radial-gradient(640px 380px at 74% 36%, rgba(255,122,26,.075), transparent 70%);
+    content:""; position:absolute; inset:-80px;
+    background:radial-gradient(620px 360px at 72% 38%, rgba(255,122,26,.08), transparent 70%);
+    animation:glowdrift 16s ease-in-out infinite alternate;
+  }
+  @keyframes glowdrift {
+    from { transform:translate3d(-46px,-14px,0) scale(1); opacity:.75; }
+    to   { transform:translate3d(52px,30px,0) scale(1.14); opacity:1; }
   }
   .hero-bg::before {
-    content:""; position:absolute; inset:0; opacity:.5;
+    content:""; position:absolute; inset:0; opacity:.45;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='0.05'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    animation:grain .9s steps(1) infinite;
   }
+  @keyframes grain {
+    0%, 100% { background-position:0 0; }
+    20% { background-position:-34px 12px; }
+    40% { background-position:22px -26px; }
+    60% { background-position:-14px -38px; }
+    80% { background-position:36px 20px; }
+  }
+  .hero-bg .spark {
+    position:absolute; width:32px; height:32px; opacity:0;
+    background:rgba(255,178,36,.05);
+    box-shadow:inset 0 0 0 1px rgba(255,178,36,.18);
+    animation:sparkle 7.7s ease-in-out infinite; animation-delay:var(--sd,0s);
+  }
+  @keyframes sparkle { 0%, 84%, 100% { opacity:0; } 90%, 95% { opacity:1; } }
   .hero-grid {
     position:relative; display:grid; grid-template-columns:1.05fr .95fr;
     gap:56px; align-items:center;
@@ -226,6 +257,22 @@ const STYLES = `
   .stat b small { font-size:13px; color:var(--muted); font-weight:400; }
   .stat.hot b { color:var(--amber); }
 
+  /* ── manifesto ───────────────────────────────────────────────────────── */
+  .creed { margin-top:18px; display:flex; flex-direction:column; gap:38px; }
+  .creed-line { margin:0; max-width:720px; font:600 clamp(20px,2.6vw,29px)/1.3 var(--sans); letter-spacing:-.015em; }
+  .creed-line > span {
+    display:block; margin-top:9px; max-width:560px;
+    font:400 15.5px/1.65 var(--sans); letter-spacing:0; color:var(--muted);
+  }
+  .creed-line:nth-child(2) { margin-left:clamp(0px,7vw,96px); }
+  .creed-line:nth-child(3) { margin-left:clamp(0px,14vw,192px); }
+  .creed-coda {
+    margin:56px 0 0; max-width:620px; padding:18px 22px;
+    border-left:2px solid var(--amber); background:var(--bg1);
+    font:400 13px/1.8 var(--mono); color:var(--body);
+  }
+  .creed-coda b { color:var(--amber); font-weight:500; }
+
   /* ── feature cards ───────────────────────────────────────────────────── */
   .features { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); border:1px solid var(--line); margin-top:44px; }
   .fcard { position:relative; background:var(--bg); padding:30px 28px 24px; transition:background .2s; }
@@ -266,18 +313,32 @@ const STYLES = `
   /* ── capabilities ────────────────────────────────────────────────────── */
   .caps { border:1px solid var(--line); margin-top:44px; }
   .cap {
-    display:grid; grid-template-columns:150px 1fr 330px; gap:24px;
+    display:grid; grid-template-columns:34px 132px 1fr 330px; gap:20px;
     padding:19px 24px; border-top:1px solid var(--line); align-items:baseline;
     transition:background .15s, box-shadow .2s;
   }
   .cap:first-child { border-top:0; }
   .cap:hover { background:var(--bg1); box-shadow:inset 2px 0 0 var(--amber); }
+  .cap-i { font:400 10.5px var(--mono); color:var(--faint); letter-spacing:.1em; }
   .cap-k { font:600 13px var(--mono); color:var(--amber); }
   .cap-d { margin:0; font-size:14px; color:var(--body); line-height:1.6; }
   .cap-c {
     font:400 11.5px var(--mono); color:var(--faint); text-align:right;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
+  .roadmap {
+    display:flex; flex-wrap:wrap; align-items:center; gap:10px 26px;
+    padding:14px 24px; border:1px dashed var(--line2); border-top:0;
+    font:400 12px var(--mono); color:var(--muted);
+  }
+  .rm-tag { font-weight:600; font-size:10.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--amber); }
+  .rm-item { display:inline-flex; align-items:center; gap:8px; }
+  .rm-item i {
+    width:6px; height:6px; border:1px solid var(--amber); background:none;
+    animation:rmblink 2.8s ease-in-out infinite; animation-delay:var(--rb,0s);
+  }
+  @keyframes rmblink { 0%, 100% { background:transparent; } 50% { background:var(--amber); } }
+  .rm-item em { font-style:normal; color:var(--faint); }
 
   /* ── architecture flow ───────────────────────────────────────────────── */
   .flow { margin-top:48px; display:flex; flex-direction:column; align-items:center; }
@@ -358,12 +419,35 @@ const STYLES = `
   .f-col h4 { font:600 10.5px var(--mono); letter-spacing:.18em; text-transform:uppercase; color:var(--faint); margin:0 0 14px; }
   .f-col a { display:block; font:400 13px var(--mono); color:var(--muted); padding:4px 0; }
   .f-col a:hover { color:var(--amber); text-decoration:none; }
-  .megamark { overflow:hidden; pointer-events:none; }
-  .megamark div {
+  .megamark { overflow:hidden; user-select:none; }
+  .megamark canvas { display:block; width:100%; height:clamp(150px,19vw,250px); }
+  html:not(.js) .megamark canvas { display:none; }
+  .mega-fallback {
     font:400 clamp(70px,13.5vw,168px)/.92 var(--pixel); letter-spacing:.02em;
     text-align:center; color:#15130e;
     transform:translateY(16%); user-select:none;
   }
+  .js .mega-fallback { display:none; }
+
+  /* ── status ──────────────────────────────────────────────────────────── */
+  .status-hero { padding:84px 0 100px; }
+  .status-sub { font:400 12.5px var(--mono); color:var(--faint); margin:4px 0 0; }
+  h1.display.status-bad em { color:var(--err); }
+  .st-row {
+    display:grid; grid-template-columns:14px 170px 1fr 90px 120px;
+    gap:16px; align-items:center; padding:16px 20px; border-top:1px solid var(--line);
+  }
+  .st-row:first-child { border-top:0; }
+  .st-dot { width:8px; height:8px; border-radius:50%; }
+  .st-dot.on { background:var(--ok); box-shadow:0 0 9px rgba(140,217,140,.7); animation:stpulse 2.4s ease-in-out infinite; }
+  .st-dot.err { background:var(--err); box-shadow:0 0 9px rgba(255,107,94,.6); }
+  @keyframes stpulse { 0%, 100% { box-shadow:0 0 4px rgba(140,217,140,.3); } 50% { box-shadow:0 0 11px rgba(140,217,140,.85); } }
+  .st-name { font:600 12px var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--fg); }
+  .st-note { font:400 12px var(--mono); color:var(--faint); }
+  .st-ms { font:400 12.5px var(--mono); color:var(--muted); text-align:right; }
+  .st-state { font:500 11px var(--mono); letter-spacing:.12em; text-transform:uppercase; text-align:right; }
+  .st-state.ok { color:var(--ok); } .st-state.bad { color:var(--err); }
+  .status-foot { font:400 12.5px var(--mono); color:var(--faint); margin-top:22px; }
 
   /* ── auth ────────────────────────────────────────────────────────────── */
   .auth-wrap { max-width:400px; margin:9vh auto 90px; padding:0 24px; }
@@ -444,10 +528,7 @@ const STYLES = `
   .js .rev.vis { opacity:1; transform:none; }
   .features .rev:nth-child(2) { --rd:.07s; } .features .rev:nth-child(3) { --rd:.14s; }
   .features .rev:nth-child(4) { --rd:.21s; }
-  .code2 .rev:nth-child(2), .split .rev:nth-child(2) { --rd:.1s; }
-  .caps .rev:nth-child(2) { --rd:.05s; } .caps .rev:nth-child(3) { --rd:.1s; }
-  .caps .rev:nth-child(4) { --rd:.15s; } .caps .rev:nth-child(5) { --rd:.2s; }
-  .caps .rev:nth-child(6) { --rd:.25s; }
+  .creed .rev:nth-child(2) { --rd:.12s; } .creed .rev:nth-child(3) { --rd:.24s; }
 
   .replay {
     font:500 10.5px var(--mono); letter-spacing:.08em; color:var(--faint);
@@ -462,8 +543,10 @@ const STYLES = `
     .hero-grid { grid-template-columns:1fr; gap:40px; }
     .features, .split, .code2 { grid-template-columns:1fr; }
     .stats { grid-template-columns:1fr 1fr; }
-    .cap { grid-template-columns:120px 1fr; }
+    .cap { grid-template-columns:26px 104px 1fr; }
     .cap-c { display:none; }
+    .st-row { grid-template-columns:14px 1fr 70px 100px; }
+    .st-note { display:none; }
     .f-grid { grid-template-columns:1fr 1fr; }
     .tiles { grid-template-columns:1fr; }
     .nav-links { display:none; }
@@ -485,6 +568,7 @@ const STYLES = `
     .t-bar { transform:none; }
     .js .rev { opacity:1 !important; transform:none !important; }
     .fl-line i { display:none; }
+    .hero-bg .spark { display:none; }
   }
 `;
 
@@ -520,6 +604,106 @@ const SCRIPT = `
   } else {
     document.querySelectorAll(".rev").forEach(function (el) { el.classList.add("vis"); });
   }
+
+  var reduced = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // hero grid: stray cells ignite on the 32px lattice
+  var heroBg = document.querySelector(".hero-bg");
+  if (heroBg && !reduced) {
+    var GRID = 32;
+    var placeSpark = function (s) {
+      var cols = Math.floor(heroBg.clientWidth / GRID);
+      var rows = Math.floor((heroBg.clientHeight * 0.82) / GRID);
+      s.style.left = Math.floor(Math.random() * cols) * GRID + "px";
+      s.style.top = Math.floor(Math.random() * rows) * GRID + "px";
+    };
+    for (var si = 0; si < 6; si++) {
+      var sp = document.createElement("i");
+      sp.className = "spark";
+      sp.style.setProperty("--sd", (si * 1.28).toFixed(2) + "s");
+      placeSpark(sp);
+      sp.addEventListener("animationiteration", placeSpark.bind(null, sp));
+      heroBg.appendChild(sp);
+    }
+  }
+
+  // footer: the wordmark as a field of live pixels
+  (function () {
+    var cv = document.getElementById("mega");
+    if (!cv || !cv.getContext) return;
+    var ctx = cv.getContext("2d");
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var cells = [], W = 0, H = 0, CS = 8, t = 0, raf = null, running = false;
+    var mouse = { x: -1e4, y: -1e4 };
+
+    function build() {
+      W = cv.clientWidth; H = cv.clientHeight;
+      if (!W || !H) return;
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      CS = Math.max(5, Math.round(H / 26));
+      var cols = Math.ceil(W / CS), rows = Math.ceil(H / CS);
+      var off = document.createElement("canvas");
+      off.width = cols; off.height = rows;
+      var o = off.getContext("2d");
+      o.fillStyle = "#fff";
+      o.textAlign = "center"; o.textBaseline = "middle";
+      o.font = Math.min(rows * 0.95, cols / 4.4) + "px 'Geist Pixel', monospace";
+      o.fillText("workdir", cols / 2, rows * 0.58);
+      var d = o.getImageData(0, 0, cols, rows).data;
+      cells = [];
+      for (var y = 0; y < rows; y++) {
+        for (var x = 0; x < cols; x++) {
+          if (d[(y * cols + x) * 4 + 3] > 110) {
+            cells.push({ x: x, y: y, ph: Math.random() * 6.283, sp: 0.4 + Math.random() * 1.1 });
+          }
+        }
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      for (var i = 0; i < cells.length; i++) {
+        var c = cells[i];
+        var px = c.x * CS, py = c.y * CS;
+        var dx = px - mouse.x, dy = py - mouse.y;
+        var prox = Math.max(0, 1 - Math.sqrt(dx * dx + dy * dy) / 160);
+        var wave = 0.5 + 0.5 * Math.sin(t * 1.1 - c.x * 0.16 - c.y * 0.1);
+        var tw = 0.5 + 0.5 * Math.sin(t * c.sp + c.ph);
+        var b = 0.07 + wave * 0.1 + tw * 0.05 + prox * prox * 0.95;
+        if (b > 1) b = 1;
+        ctx.fillStyle = "rgb(" + Math.round(21 + 234 * b) + "," + Math.round(18 + 160 * b) + "," + Math.round(13 + 23 * b) + ")";
+        ctx.fillRect(px, py, CS - 1, CS - 1);
+      }
+    }
+
+    function frame() { t += 0.016; draw(); raf = requestAnimationFrame(frame); }
+    function start() { if (!running && !reduced) { running = true; raf = requestAnimationFrame(frame); } }
+    function stop() { running = false; if (raf) cancelAnimationFrame(raf); raf = null; }
+
+    cv.addEventListener("pointermove", function (e) {
+      var r = cv.getBoundingClientRect();
+      mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top;
+    });
+    cv.addEventListener("pointerleave", function () { mouse.x = -1e4; mouse.y = -1e4; });
+
+    var ready = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
+    ready.then(function () {
+      build();
+      if (reduced) { t = 2.2; draw(); return; }
+      if ("IntersectionObserver" in window) {
+        new IntersectionObserver(function (es) {
+          es.forEach(function (e) { e.isIntersecting ? start() : stop(); });
+        }).observe(cv);
+      } else { start(); }
+    });
+
+    var rt;
+    window.addEventListener("resize", function () {
+      clearTimeout(rt);
+      rt = setTimeout(function () { build(); if (reduced) { t = 2.2; draw(); } }, 180);
+    });
+  })();
 `;
 
 const FAVICON =
@@ -567,7 +751,7 @@ curl -s -X POST <span class="c-f">$WORKDIR_API_URL</span>/v1/sandboxes \\
 function layout(
   title: string,
   body: ReturnType<typeof html>,
-  opts?: { user?: { email: string }; description?: string },
+  opts?: { user?: { email: string }; description?: string; refresh?: number },
 ) {
   const description =
     opts?.description ??
@@ -581,6 +765,7 @@ function layout(
         <meta name="theme-color" content="#0a0908" />
         <meta property="og:title" content="${title}" />
         <meta property="og:description" content="${description}" />
+        ${opts?.refresh ? html`<meta http-equiv="refresh" content="${opts.refresh}" />` : ""}
         <title>${title}</title>
         <script>
           document.documentElement.classList.add("js");
@@ -604,6 +789,7 @@ function layout(
               <a href="https://github.com/mv37-org/workdir/blob/main/docs/API.md">docs</a>
               <a href="https://github.com/mv37-org/workdir/blob/main/docs/FEATURES.md">features</a>
               <a href="https://github.com/mv37-org/workdir">github</a>
+              <a href="/status">status</a>
             </nav>
             <div class="nav-cta">
               ${opts?.user
@@ -630,7 +816,7 @@ function layout(
                 <h4>product</h4>
                 <a href="/signup">get an api key</a>
                 <a href="/dashboard">dashboard</a>
-                <a href="/healthz">status</a>
+                <a href="/status">status</a>
               </div>
               <div class="f-col">
                 <h4>docs</h4>
@@ -643,11 +829,13 @@ function layout(
                 <h4>open source</h4>
                 <a href="https://github.com/mv37-org/workdir">github</a>
                 <a href="https://github.com/mv37-org/workdir/blob/main/LICENSE">license · AGPL-3.0</a>
-                <a href="https://firecracker-microvm.github.io/">firecracker</a>
               </div>
             </div>
           </div>
-          <div class="megamark" aria-hidden="true"><div>workdir</div></div>
+          <div class="megamark" aria-hidden="true">
+            <canvas id="mega"></canvas>
+            <div class="mega-fallback">workdir</div>
+          </div>
         </footer>
         <script>
           ${raw(SCRIPT)}
@@ -699,7 +887,7 @@ export function landingPage(user?: { email: string }) {
         <div class="wrap">
           <div class="hero-grid">
             <div>
-              <div class="hero-tag"><b>$</b> sandboxes for ai agents · open source · billed by the second</div>
+              <div class="hero-tag"><b>$</b> agents need a place to exist — this one boots in 38ms</div>
               <h1 class="display">A computer for <em>every agent</em>.</h1>
               <p class="sub">
                 workdir hands your agent a real Linux machine — booted in ~40&nbsp;ms, sealed off from
@@ -729,7 +917,42 @@ export function landingPage(user?: { email: string }) {
 
       <section class="block">
         <div class="wrap">
-          <div class="kicker"><b>//</b> why workdir</div>
+          <div class="kicker"><b>//</b> the point <span class="kline"></span><span class="kidx">01</span></div>
+          <h2 class="h2">Agents need a place to exist.</h2>
+          <div class="creed">
+            <p class="creed-line rev">
+              Code execution is part of life now.
+              <span>
+                An agent that can't run anything is a chat window. The intelligence is ready for real
+                work — it just needs hands.
+              </span>
+            </p>
+            <p class="creed-line rev">
+              Real work needs a real computer.
+              <span>
+                Clone the repo. Run the tests. Break something, learn, retry. None of that happens in
+                a text box — and none of it belongs on your laptop.
+              </span>
+            </p>
+            <p class="creed-line rev">
+              That computer shouldn't be precious.
+              <span>
+                A sandbox should be like a process: spawned without thinking, killed without
+                mourning, cheap enough to be wrong a hundred times.
+              </span>
+            </p>
+          </div>
+          <p class="creed-coda">
+            <b>workdir</b> is that place — a fast room with every tool your agent reaches for, and
+            more arriving each release. Open source, because the room your agent works in should be
+            one you can own.
+          </p>
+        </div>
+      </section>
+
+      <section class="block">
+        <div class="wrap">
+          <div class="kicker"><b>//</b> what you get <span class="kline"></span><span class="kidx">02</span></div>
           <h2 class="h2">A real computer, priced like a function call.</h2>
           <p class="lead">
             Not a shared container. Not a 30-second VM queue. Every sandbox is its own machine — and
@@ -778,21 +1001,21 @@ export function landingPage(user?: { email: string }) {
 
       <section class="block">
         <div class="wrap">
-          <div class="kicker"><b>//</b> the api</div>
+          <div class="kicker"><b>//</b> the api <span class="kline"></span><span class="kidx">03</span></div>
           <h2 class="h2">Three calls. Create, exec, delete.</h2>
           <p class="lead">
             Typed SDKs for TypeScript and Python, or curl if that's more your thing. Clone a repo,
             run commands, open a port — get back a URL you can share.
           </p>
           <div class="code2">
-            <div class="codebox rev">
+            <div class="codebox">
               <div class="codehead">
                 <span>agent.ts</span><span class="lang">typescript</span>
                 <button class="copy" data-copy="#code-ts" type="button">copy</button>
               </div>
               <pre class="code" id="code-ts">${raw(TS_CODE)}</pre>
             </div>
-            <div class="codebox rev">
+            <div class="codebox">
               <div class="codehead">
                 <span>ci.py</span><span class="lang">python</span>
                 <button class="copy" data-copy="#code-py" type="button">copy</button>
@@ -805,13 +1028,14 @@ export function landingPage(user?: { email: string }) {
 
       <section class="block">
         <div class="wrap">
-          <div class="kicker"><b>//</b> batteries included</div>
+          <div class="kicker"><b>//</b> batteries included <span class="kline"></span><span class="kidx">04</span></div>
           <h2 class="h2">Everything an agent reaches for.</h2>
           <p class="lead">
             Six flags on <code>create()</code>. None of them on the meter until you flip one.
           </p>
           <div class="caps corners">
-            <div class="cap rev">
+            <div class="cap">
+              <span class="cap-i">01</span>
               <code class="cap-k">secrets</code>
               <p class="cap-d">
                 Encrypted at rest, injected at runtime, never written to disk or snapshots. Your keys
@@ -819,7 +1043,8 @@ export function landingPage(user?: { email: string }) {
               </p>
               <code class="cap-c">startup: { secrets: ["OPENAI_API_KEY"] }</code>
             </div>
-            <div class="cap rev">
+            <div class="cap">
+              <span class="cap-i">02</span>
               <code class="cap-k">docker</code>
               <p class="cap-d">
                 Containers inside the sandbox, isolated with everything else. The host never meets
@@ -827,7 +1052,8 @@ export function landingPage(user?: { email: string }) {
               </p>
               <code class="cap-c">docker: { enabled: true }</code>
             </div>
-            <div class="cap rev">
+            <div class="cap">
+              <span class="cap-i">03</span>
               <code class="cap-k">mounts.s3</code>
               <p class="cap-d">
                 Mount a bucket like a folder — S3, R2, or MinIO — with credentials pulled from your
@@ -835,7 +1061,8 @@ export function landingPage(user?: { email: string }) {
               </p>
               <code class="cap-c">{ type: "s3", bucket: "data", mount_path: "/mnt/data" }</code>
             </div>
-            <div class="cap rev">
+            <div class="cap">
+              <span class="cap-i">04</span>
               <code class="cap-k">browser</code>
               <p class="cap-d">
                 Chromium with Playwright wired up, a VNC view to watch your agent browse, CDP if
@@ -843,7 +1070,8 @@ export function landingPage(user?: { email: string }) {
               </p>
               <code class="cap-c">image: "browser" → urls.vnc · urls.cdp</code>
             </div>
-            <div class="cap rev">
+            <div class="cap">
+              <span class="cap-i">05</span>
               <code class="cap-k">previews</code>
               <p class="cap-d">
                 Open a port, get a public HTTPS URL. Demo the app your agent just built without
@@ -851,7 +1079,8 @@ export function landingPage(user?: { email: string }) {
               </p>
               <code class="cap-c">ports: [3000] → 3000-sb_x.sandboxes.workdir.dev</code>
             </div>
-            <div class="cap rev">
+            <div class="cap">
+              <span class="cap-i">06</span>
               <code class="cap-k">files</code>
               <p class="cap-d">
                 Drop config and seed data in at boot; build throwaway images that clean up after
@@ -860,12 +1089,18 @@ export function landingPage(user?: { email: string }) {
               <code class="cap-c">files: [{ path: "config.json", content: … }]</code>
             </div>
           </div>
+          <div class="roadmap">
+            <span class="rm-tag">shipping next</span>
+            <span class="rm-item"><i></i>gpu shapes <em>— next release</em></span>
+            <span class="rm-item"><i style="--rb:.9s"></i>jupyter kernels</span>
+            <span class="rm-item"><i style="--rb:1.8s"></i>more built-in operations</span>
+          </div>
         </div>
       </section>
 
       <section class="block">
         <div class="wrap">
-          <div class="kicker"><b>//</b> how it works</div>
+          <div class="kicker"><b>//</b> how it works <span class="kline"></span><span class="kidx">05</span></div>
           <h2 class="h2">One binary, two planes.</h2>
           <p class="lead">
             A control plane that decides; a data plane that executes. Develop against the same API
@@ -902,24 +1137,25 @@ export function landingPage(user?: { email: string }) {
 
       <section class="block">
         <div class="wrap">
-          <div class="kicker"><b>//</b> run it your way</div>
+          <div class="kicker"><b>//</b> run it your way <span class="kline"></span><span class="kidx">06</span></div>
           <h2 class="h2">Managed cloud, or your own metal.</h2>
           <div class="split">
-            <div class="splitcell rev">
+            <div class="splitcell">
               <div class="tag">cloud</div>
               <h3>workdir.dev</h3>
               <p class="grow">
-                No infra, no images to build. Sign up, take a key, boot your first sandbox before
-                the coffee order's ready.
+                The hosted fleet, priced like we're not trying to get rich on it. Sign up, take a
+                key, boot your first sandbox before the coffee order's ready.
               </p>
               <div><a class="btn primary" href="/signup">get an api key <span class="ar">→</span></a></div>
             </div>
-            <div class="splitcell rev">
+            <div class="splitcell">
               <div class="tag">self-host</div>
               <h3>Your own server</h3>
               <p class="grow">
-                One install script, one server, AGPL-3.0. The same binary that runs our cloud —
-                scheduler, billing, previews and all.
+                Self-hosting is the first-class path here, not the fallback. One install script, one
+                server, the same binary that runs our cloud — you decide what your agents can reach,
+                and how much room they get.
               </p>
               <div class="install">
                 <code id="code-install">curl -fsSL https://workdir.dev/install.sh | sudo bash</code>
@@ -943,6 +1179,56 @@ export function landingPage(user?: { email: string }) {
       </section>
     `,
     { user },
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Status
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface StatusCheck {
+  name: string;
+  ok: boolean;
+  ms: number | null;
+  note: string;
+}
+
+export function statusPage(opts: { checks: StatusCheck[]; at: string }) {
+  const allOk = opts.checks.every((c) => c.ok);
+  return layout(
+    "Status — workdir",
+    html`
+      <section class="status-hero">
+        <div class="wrap">
+          <div class="kicker"><b>//</b> status <span class="kline"></span><span class="kidx">live</span></div>
+          <h1 class="display ${allOk ? "" : "status-bad"}">
+            ${allOk ? html`All systems <em>operational</em>.` : html`Something's <em>not answering</em>.`}
+          </h1>
+          <p class="status-sub">
+            checks run as this page rendered · ${opts.at} utc · refreshes every 30s
+          </p>
+          <div class="panel" style="margin-top:36px">
+            ${opts.checks.map(
+              (ch) => html`<div class="st-row">
+                <span class="st-dot ${ch.ok ? "on" : "err"}"></span>
+                <span class="st-name">${ch.name}</span>
+                <span class="st-note">${ch.note}</span>
+                <span class="st-ms">${ch.ms === null ? "—" : `${ch.ms}ms`}</span>
+                <span class="st-state ${ch.ok ? "ok" : "bad"}">${ch.ok ? "operational" : "unreachable"}</span>
+              </div>`,
+            )}
+          </div>
+          <p class="status-foot">
+            something look wrong?
+            <a href="https://github.com/mv37-org/workdir/issues">open an issue</a>
+          </p>
+        </div>
+      </section>
+    `,
+    {
+      description: "Live status of workdir.dev — control panel, accounts database, and sandbox API.",
+      refresh: 30,
+    },
   );
 }
 

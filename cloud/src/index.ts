@@ -5,7 +5,8 @@ import * as db from "./db";
 import type { User } from "./db";
 import * as daemon from "./daemon";
 import type { Env } from "./daemon";
-import { authPage, dashboardPage, landingPage } from "./views";
+import { authPage, dashboardPage, landingPage, statusPage } from "./views";
+import type { StatusCheck } from "./views";
 
 const SESSION_COOKIE = "wd_session";
 const SESSION_TTL_DAYS = 30;
@@ -39,6 +40,36 @@ app.get("/", async (c) => {
 });
 
 app.get("/healthz", (c) => c.json({ status: "ok" }));
+
+app.get("/status", async (c) => {
+  const checks: StatusCheck[] = [
+    { name: "control panel", ok: true, ms: null, note: "this site — it served you this page" },
+  ];
+
+  try {
+    const t = Date.now();
+    await c.env.DB.prepare("SELECT 1").first();
+    checks.push({ name: "accounts db", ok: true, ms: Date.now() - t, note: "orgs, users, api keys" });
+  } catch {
+    checks.push({ name: "accounts db", ok: false, ms: null, note: "orgs, users, api keys" });
+  }
+
+  try {
+    const t = Date.now();
+    const base = c.env.WORKDIR_API_URL.replace(/\/$/, "");
+    const res = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(4000) });
+    checks.push({
+      name: "sandbox api",
+      ok: res.ok,
+      ms: Date.now() - t,
+      note: "create · exec · previews",
+    });
+  } catch {
+    checks.push({ name: "sandbox api", ok: false, ms: null, note: "create · exec · previews" });
+  }
+
+  return c.html(statusPage({ checks, at: new Date().toISOString().slice(11, 19) }));
+});
 
 app.get("/login", async (c) => {
   if (await currentUser(c)) return c.redirect("/dashboard");

@@ -78,6 +78,10 @@ impl LocalNode {
         let pending = { self.hotpools.lock().await.pending_warm() };
         let mut warmed = 0;
         for (key, _deficit) in pending {
+            // Skip pools whose image isn't built on this node (no log spam).
+            if !self.runtime.image_available(&key.image_key) {
+                continue;
+            }
             let spec = VmSpec {
                 sandbox_id: crate::ids::sandbox_id(),
                 org_id: "pool".to_string(),
