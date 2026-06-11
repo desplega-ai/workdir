@@ -185,10 +185,11 @@ sudo systemctl restart workdir                # browser hot pool now warms
 A browser sandbox auto-exposes noVNC (6080) and CDP (9222) preview routes; the
 create response carries the URLs.
 
-## 8. Jailer hardening (opt-in)
+## 8. Jailer hardening (on by default)
 
-By default Firecracker is launched directly — the microVM is the isolation
-boundary. For defense-in-depth (chroot + per-VM uid/gid + cgroups), set in
+`provision-node.sh` enables the jailer (spec §18): every microVM is chrooted and
+dropped to its own uid/gid (`jailer_uid_base + index`). A Firecracker escape then
+lands as an **unprivileged, jailed uid** — not root, not the daemon. Set in
 `[runtime]`:
 
 ```toml
@@ -196,8 +197,16 @@ use_jailer = true
 jailer_uid_base = 100000
 ```
 
-The jailer sets up the chroot and drops privileges, so the daemon must run as
-**root** when this is on (adjust the systemd `User=`/capabilities accordingly).
+The jailer sets up the chroot and drops privileges, so the daemon runs as
+**root** (the shipped `workdir.service` is `User=root`). Verify it's active:
+
+```bash
+ps -o user=,comm= -C firecracker     # each VMM should show uid 100000+ (not root)
+```
+
+To run unjailed instead (microVM still the isolation boundary), set
+`use_jailer = false` and run the daemon as `User=workdir` with
+`SupplementaryGroups=kvm` + `AmbientCapabilities=CAP_NET_ADMIN`.
 
 ## 9. Multi-node (horizontal scaling)
 

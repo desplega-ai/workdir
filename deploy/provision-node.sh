@@ -153,6 +153,9 @@ role = "all-in-one"
 
 [runtime]
 kind = "firecracker"
+# Jailer on: each microVM is chrooted + dropped to its own uid/gid (spec §18).
+# The systemd unit runs the daemon as root so the jailer can set this up.
+use_jailer = true
 firecracker_bin = "/usr/local/bin/firecracker"
 jailer_bin = "/usr/local/bin/jailer"
 kernel_image = "$DATA_DIR/kernel/vmlinux"

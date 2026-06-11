@@ -6,12 +6,12 @@ Wants=network-online.target workdir-net.service
 
 [Service]
 Type=simple
-User=workdir
-Group=workdir
-# KVM access for Firecracker, CAP_NET_ADMIN to create/attach per-VM tap devices.
-SupplementaryGroups=kvm
-AmbientCapabilities=CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_ADMIN
+# Runs as root because the jailer (runtime.use_jailer=true, the default for the
+# production provisioner) needs to chroot + drop each microVM to its own
+# per-VM uid/gid. Each Firecracker process then runs UNPRIVILEGED and jailed —
+# the daemon is root, the VMMs are not. With use_jailer=false you can instead
+# run User=workdir (+ SupplementaryGroups=kvm, AmbientCapabilities=CAP_NET_ADMIN).
+User=root
 Environment=WORKDIR_CONFIG=/etc/workdir/config.toml
 Environment=RUST_LOG=info,sandboxd=info
 # --config is a global flag (before the subcommand); the unit passes it via the
@@ -20,12 +20,7 @@ ExecStart=/usr/local/bin/workdir serve
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=1048576
-NoNewPrivileges=true
-ReadWritePaths=/var/lib/workdir /etc/workdir
 StateDirectory=workdir
-# Firecracker + per-VM networking.
-DeviceAllow=/dev/kvm rw
-DeviceAllow=/dev/net/tun rw
 
 [Install]
 WantedBy=multi-user.target
