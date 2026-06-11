@@ -227,6 +227,43 @@ pub async fn org_sandbox_delete(
     Ok(Json(json!({ "id": id, "deleted": true })))
 }
 
+/// Kill switch: suspend an org (block new creates + stop running sandboxes).
+pub async fn org_suspend(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(org): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    if org == state.cfg.auth.bootstrap_org {
+        return Err(ApiError::BadRequest("refusing to suspend the bootstrap admin org".into()));
+    }
+    let mut o = state.store.get_org(&org).map_err(ApiError::Internal)?.ok_or_else(|| ApiError::NotFound(format!("org {org}")))?;
+    o.status = OrgStatus::Suspended;
+    state.store.put_org(&o).map_err(ApiError::Internal)?;
+    // Stop everything the org has running right now.
+    let sbs = state.store.list_sandboxes_for_org(&org).map_err(ApiError::Internal)?;
+    let mut stopped = 0;
+    for sb in sbs.into_iter().filter(|s| s.state == LfState::Running) {
+        if service::stop_sandbox(&state, sb).await.is_ok() {
+            stopped += 1;
+        }
+    }
+    tracing::warn!(org = %org, stopped, "org suspended (kill switch)");
+    Ok(Json(json!({ "org": org, "status": "suspended", "stopped": stopped })))
+}
+
+pub async fn org_unsuspend(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(org): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    let mut o = state.store.get_org(&org).map_err(ApiError::Internal)?.ok_or_else(|| ApiError::NotFound(format!("org {org}")))?;
+    o.status = OrgStatus::Active;
+    state.store.put_org(&o).map_err(ApiError::Internal)?;
+    Ok(Json(json!({ "org": org, "status": "active" })))
+}
+
 /// List an org's custom images (build status, version, log, timestamps).
 pub async fn org_images(
     State(state): State<AppState>,
@@ -284,6 +321,7 @@ pub async fn metrics(
         committed_memory_mb += sb.resources.memory_mb as u64;
         *by_state.entry(sb.state.as_str().to_string()).or_default() += 1;
         *by_image.entry(sb.image.clone()).or_default() += 1;
+        let net = sb.runtime_handle.as_ref().and_then(|h| state.local.runtime().vm_net_stats(h));
         sandboxes.push(json!({
             "id": sb.id,
             "org_id": sb.org_id,
@@ -300,6 +338,8 @@ pub async fn metrics(
             "secret_count": sb.secret_names.len(),
             "node_id": sb.node_id,
             "price_usd_hr": price,
+            "tx_bytes": net.as_ref().map(|n| n.tx_bytes),
+            "rx_bytes": net.as_ref().map(|n| n.rx_bytes),
         }));
     }
 

@@ -47,6 +47,8 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/metrics", get(admin::metrics))
         .route("/admin/orgs", post(admin::create_org))
         .route("/admin/orgs/:org/usage", get(admin::org_usage))
+        .route("/admin/orgs/:org/suspend", post(admin::org_suspend))
+        .route("/admin/orgs/:org/unsuspend", post(admin::org_unsuspend))
         .route("/admin/orgs/:org/secrets", get(admin::org_secrets_list))
         .route("/admin/orgs/:org/secrets/:name", put(admin::org_secret_put).delete(admin::org_secret_delete))
         .route("/admin/orgs/:org/sandboxes", get(admin::org_sandboxes))

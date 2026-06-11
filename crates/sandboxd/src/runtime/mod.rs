@@ -85,6 +85,14 @@ pub struct DirEntry {
     pub dir: bool,
 }
 
+/// Network byte counters for a VM, used by abuse monitoring to flag miners /
+/// scanners (high sustained egress).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct NetStats {
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct SnapshotArtifact {
     pub handle: String,
@@ -110,6 +118,11 @@ pub trait Runtime: Send + Sync {
     /// present). The warmer uses this to skip pools for images not yet built.
     fn image_available(&self, _image_key: &str) -> bool {
         true
+    }
+
+    /// Per-VM network byte counters (for abuse monitoring). None if unsupported.
+    fn vm_net_stats(&self, _handle: &str) -> Option<NetStats> {
+        None
     }
 
     /// Pre-boot a warm microVM for a hot pool. Returns its handle.

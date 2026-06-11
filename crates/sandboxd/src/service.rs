@@ -39,8 +39,13 @@ pub async fn create_sandbox(
     if org.status == OrgStatus::Suspended {
         return Err(ApiError::Forbidden("org suspended".into()));
     }
-    if !ctx.admin && org.balance_usd() <= 0.0 {
-        return Err(ApiError::Forbidden("no prepaid credits remaining".into()));
+    if !ctx.admin {
+        // Live balance (includes open intervals) so a long-running sandbox can't
+        // keep an org "in credit" forever while it bills (review #8).
+        let intervals = state.store.usage_for_org(&ctx.org_id).map_err(ApiError::Internal)?;
+        if crate::usage::live_balance_usd(&org, &intervals, Utc::now()) <= 0.0 {
+            return Err(ApiError::Forbidden("no prepaid credits remaining".into()));
+        }
     }
 
     // --- image classification (spec §10, §11) ---------------------------

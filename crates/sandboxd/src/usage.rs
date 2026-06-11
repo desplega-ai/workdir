@@ -35,10 +35,19 @@ impl Org {
         self.quota_units <= 0.0
     }
 
-    /// Remaining prepaid balance in USD.
+    /// Remaining prepaid balance in USD using the persisted (lazily-updated)
+    /// spend. Use [`live_balance_usd`] for enforcement so a long-running
+    /// sandbox with an open interval can't evade the limit (review #8).
     pub fn balance_usd(&self) -> f64 {
         self.prepaid_credits_usd - self.spent_usd
     }
+}
+
+/// Real-time balance: prepaid credits minus the cost of *all* the org's
+/// intervals priced at `now` (including still-open ones).
+pub fn live_balance_usd(org: &Org, intervals: &[UsageInterval], now: DateTime<Utc>) -> f64 {
+    let spent: f64 = intervals.iter().map(|iv| iv.cost_usd(now)).sum();
+    org.prepaid_credits_usd - spent
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
