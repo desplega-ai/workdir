@@ -243,10 +243,18 @@ impl FirecrackerRuntime {
         bail!("firecracker api socket {sock:?} never accepted a connection: {last:?}")
     }
 
-    /// HTTP PUT/PATCH against the Firecracker API socket (HTTP/1.1 over a Unix
-    /// socket). Reads only until the end of headers so it never blocks on a
-    /// kept-alive connection.
+    /// HTTP PUT/PATCH against the Firecracker API socket with the default read
+    /// timeout. Firecracker answers most calls in well under a second.
     async fn fc_api(&self, sock: &PathBuf, method: &str, path: &str, body: &serde_json::Value) -> Result<()> {
+        self.fc_api_to(sock, method, path, body, 10).await
+    }
+
+    /// Like [`fc_api`] but with an explicit read timeout. Snapshot create/load
+    /// hold the connection open while Firecracker synchronously writes/maps the
+    /// whole guest RAM (multiple GB), so they need a generous timeout — the
+    /// previous fixed 5 s fired mid-snapshot, returning a false failure that then
+    /// tore the VM down (the real cause of "snapshot under jailer fails").
+    async fn fc_api_to(&self, sock: &PathBuf, method: &str, path: &str, body: &serde_json::Value, read_secs: u64) -> Result<()> {
         let mut stream = Self::fc_connect(sock).await?;
         let body_str = serde_json::to_string(body)?;
         let req = format!(
@@ -263,7 +271,7 @@ impl FirecrackerRuntime {
         let mut resp = Vec::new();
         let mut buf = [0u8; 2048];
         loop {
-            match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
+            match tokio::time::timeout(Duration::from_secs(read_secs), stream.read(&mut buf)).await {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => resp.extend_from_slice(&buf[..n]),
                 Ok(Err(e)) => return Err(anyhow::Error::from(e).context("read firecracker api response")),
@@ -485,11 +493,11 @@ impl FirecrackerRuntime {
 
             let boot_start = Instant::now();
             if let Some(snap) = snapshot {
-                self.fc_api(&api_sock, "PUT", "/snapshot/load", &json!({
+                self.fc_api_to(&api_sock, "PUT", "/snapshot/load", &json!({
                     "snapshot_path": snap.join("snapshot.file").to_str().unwrap(),
                     "mem_backend": { "backend_path": snap.join("mem.file").to_str().unwrap(), "backend_type": "File" },
                     "resume_vm": true,
-                })).await?;
+                }), 300).await?;
             } else {
                 let mut machine_cfg = json!({
                     "vcpu_count": vcpus,
@@ -734,11 +742,11 @@ impl FirecrackerRuntime {
         } else {
             (snap_file.to_string_lossy().into_owned(), mem_file.to_string_lossy().into_owned())
         };
-        self.fc_api(sock, "PUT", "/snapshot/create", &json!({
+        self.fc_api_to(sock, "PUT", "/snapshot/create", &json!({
             "snapshot_type": "Full",
             "snapshot_path": snap_api,
             "mem_file_path": mem_api,
-        })).await?;
+        }), 300).await?;
         Ok((snap_file, mem_file))
     }
 }
@@ -1027,11 +1035,11 @@ impl Runtime for FirecrackerRuntime {
         } else {
             "File"
         };
-        self.fc_api(&api_sock, "PUT", "/snapshot/load", &json!({
+        self.fc_api_to(&api_sock, "PUT", "/snapshot/load", &json!({
             "snapshot_path": snap_file.to_str().unwrap(),
             "mem_backend": { "backend_path": mem_file.to_str().unwrap(), "backend_type": backend_type },
             "resume_vm": true,
-        })).await?;
+        }), 300).await?;
 
         // Update the record before the agent wait so a failure still leaves a
         // killable pid.
@@ -1135,11 +1143,11 @@ impl Runtime for FirecrackerRuntime {
         if self.prewarm_mem_cache {
             prewarm_page_cache(&child_mem).await;
         }
-        self.fc_api(&child_sock, "PUT", "/snapshot/load", &json!({
+        self.fc_api_to(&child_sock, "PUT", "/snapshot/load", &json!({
             "snapshot_path": child_snap.to_str().unwrap(),
             "mem_backend": { "backend_path": child_mem.to_str().unwrap(), "backend_type": "File" },
             "resume_vm": false,
-        })).await?;
+        }), 300).await?;
         // Repoint the restored NIC at the child's own tap, then resume.
         self.fc_api(&child_sock, "PATCH", "/network-interfaces/eth0", &json!({
             "iface_id": "eth0", "host_dev_name": tap,
