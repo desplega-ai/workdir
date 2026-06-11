@@ -6,6 +6,9 @@ export interface Env {
   DB: D1Database;
   WORKDIR_API_URL: string;
   WORKDIR_ADMIN_KEY: string;
+  /** GitHub OAuth app credentials (optional — the button 404s gracefully without them). */
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
 }
 
 async function adminFetch(

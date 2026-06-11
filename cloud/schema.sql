@@ -25,6 +25,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
+-- Failed-login throttle, keyed by ip:email. Rows are deleted on success and
+-- ignored once the window expires.
+CREATE TABLE IF NOT EXISTS auth_throttle (
+  id            TEXT PRIMARY KEY,      -- "<ip>:<email>"
+  fails         INTEGER NOT NULL DEFAULT 0,
+  first_fail_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS api_keys (
   id           TEXT PRIMARY KEY,      -- key id (kid)
   org_id       TEXT NOT NULL,

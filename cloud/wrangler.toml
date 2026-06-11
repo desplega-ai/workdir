@@ -14,6 +14,11 @@ database_id = "d31db908-139e-41c4-ba04-eea3ef72dff2"
 # is fronted by a Cloudflare Tunnel (see README), so it never opens a port.
 WORKDIR_API_URL = "https://api.workdir.dev"
 
+# GitHub OAuth app client id (public). Create the app at
+# github.com/settings/developers with callback <origin>/auth/github/callback.
+GITHUB_CLIENT_ID = ""
+
 # Secrets (DO NOT put here) — set with `wrangler secret put <NAME>`:
-#   WORKDIR_ADMIN_KEY   the daemon's admin API key (provisions/revokes keys)
-#   SESSION_SECRET      random 32+ char string for signing/session entropy
+#   WORKDIR_ADMIN_KEY      the daemon's admin API key (provisions/revokes keys)
+#   SESSION_SECRET         random 32+ char string for signing/session entropy
+#   GITHUB_CLIENT_SECRET   the GitHub OAuth app's client secret

@@ -1,6 +1,9 @@
 // Crypto helpers — all via Workers' built-in Web Crypto (no dependencies).
 
-const PBKDF2_ITERATIONS = 100_000;
+// 210k iterations of PBKDF2-HMAC-SHA256: a balance between OWASP guidance and
+// Workers CPU budgets. verifyPassword honors the iteration count stored in the
+// hash, so older 100k hashes keep verifying and re-hash on next password set.
+const PBKDF2_ITERATIONS = 210_000;
 
 function toBase64(bytes: Uint8Array): string {
   let s = "";
@@ -88,4 +91,13 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
 
 export function validEmail(email: string): boolean {
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) && email.length <= 254;
+}
+
+/**
+ * Burn the same PBKDF2 cost as a real verification. Called when the email
+ * doesn't exist (or the account is OAuth-only) so login timing doesn't reveal
+ * which addresses have accounts.
+ */
+export async function dummyVerify(): Promise<void> {
+  await pbkdf2("decoy-password", new Uint8Array(16), PBKDF2_ITERATIONS);
 }
