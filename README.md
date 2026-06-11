@@ -131,6 +131,7 @@ The control plane is platform-independent and talks to the data plane through a 
 
 - **[SETUP.md](SETUP.md)** — build & run (dev / LAN / production), config, secrets
 - **[docs/DEPLOY.md](docs/DEPLOY.md)** — deploy on Hetzner, scale, drain, ops playbooks
+- **[docs/RUNBOOK.md](docs/RUNBOOK.md)** — provision a node, build images, networking, tunnel, disaster recovery
 - **[docs/API.md](docs/API.md)** — REST API reference
 - **[docs/FEATURES.md](docs/FEATURES.md)** — secrets, docker-in-docker, S3 mounts, ephemeral files/images
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — components, runtime abstraction, multi-node design

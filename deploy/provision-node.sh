@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# provision-node.sh — bring a fresh Ubuntu 24.04 / Debian 12 dedicated server
+# up as a workdir Firecracker data-plane node. Idempotent: safe to re-run.
+#
+# This reproduces the manual bring-up of the first node (see docs/RUNBOOK.md).
+# Run as root from a checkout of this repo on the node:
+#
+#   sudo bash deploy/provision-node.sh
+#
+# Env overrides:
+#   KERNEL_CI_VERSION=v1.12   Firecracker CI kernel channel
+#   GUEST_KERNEL=6.1.128      guest kernel version to fetch
+#   SANDBOX_CIDR=10.200.0.0/16
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DATA_DIR=/var/lib/workdir
+KERNEL_CI_VERSION="${KERNEL_CI_VERSION:-v1.12}"
+GUEST_KERNEL="${GUEST_KERNEL:-6.1.128}"
+SANDBOX_CIDR="${SANDBOX_CIDR:-10.200.0.0/16}"
+BRIDGE=wdbr0
+BRIDGE_IP=10.200.0.1/16
+
+log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "run as root"
+
+# --- 0. preflight ----------------------------------------------------------
+log "preflight"
+[ -e /dev/kvm ] || die "/dev/kvm missing — this must be a bare-metal/dedicated server with virtualization"
+grep -qE 'vmx|svm' /proc/cpuinfo || die "no CPU virtualization flags (vmx/svm)"
+log "  /dev/kvm present, virtualization OK"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq curl ca-certificates git build-essential pkg-config \
+  rsync nftables iproute2 ufw >/dev/null
+command -v docker >/dev/null 2>&1 || { log "installing docker"; curl -fsSL https://get.docker.com | sh >/dev/null 2>&1; }
+
+# --- 1. Firecracker + jailer -----------------------------------------------
+if ! command -v firecracker >/dev/null 2>&1; then
+  log "installing Firecracker + jailer"
+  TAG=$(curl -s https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest | grep -oP '"tag_name": "\K[^"]+')
+  tmp=$(mktemp -d)
+  curl -sSL "https://github.com/firecracker-microvm/firecracker/releases/download/${TAG}/firecracker-${TAG}-x86_64.tgz" | tar -xz -C "$tmp"
+  install -m755 "$tmp/release-${TAG}-x86_64/firecracker-${TAG}-x86_64" /usr/local/bin/firecracker
+  install -m755 "$tmp/release-${TAG}-x86_64/jailer-${TAG}-x86_64" /usr/local/bin/jailer
+  rm -rf "$tmp"
+fi
+log "  $(firecracker --version | head -1)"
+
+# --- 2. system user + dirs -------------------------------------------------
+log "user + directories"
+id -u workdir >/dev/null 2>&1 || useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin workdir
+install -d -o workdir -g workdir "$DATA_DIR" "$DATA_DIR/kernel" "$DATA_DIR/images" "$DATA_DIR/workspaces" /etc/workdir
+usermod -aG kvm workdir
+
+# --- 3. guest kernel -------------------------------------------------------
+if [ ! -s "$DATA_DIR/kernel/vmlinux" ]; then
+  log "downloading guest kernel ${GUEST_KERNEL}"
+  curl -sSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/${KERNEL_CI_VERSION}/x86_64/vmlinux-${GUEST_KERNEL}" \
+    -o "$DATA_DIR/kernel/vmlinux"
+  chown workdir:workdir "$DATA_DIR/kernel/vmlinux"
+fi
+log "  kernel: $(du -h "$DATA_DIR/kernel/vmlinux" | cut -f1)"
+
+# --- 4. sandbox networking (bridge + NAT) ----------------------------------
+log "networking: bridge ${BRIDGE} + NAT for ${SANDBOX_CIDR}"
+UPLINK=$(ip route show default | awk '/default/ {print $5; exit}')
+[ -n "$UPLINK" ] || die "no default route / uplink interface"
+
+cat > /etc/nftables-workdir.nft <<NFT
+table inet workdir {
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    ip saddr ${SANDBOX_CIDR} ip daddr { 169.254.169.254, 169.254.0.0/16 } drop
+    ip saddr ${SANDBOX_CIDR} tcp dport { 25, 465, 587 } drop
+  }
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr ${SANDBOX_CIDR} oifname "${UPLINK}" masquerade
+  }
+}
+NFT
+
+cat > /etc/systemd/system/workdir-net.service <<EOF
+[Unit]
+Description=workdir sandbox network (bridge + NAT)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'ip link add ${BRIDGE} type bridge 2>/dev/null; ip addr add ${BRIDGE_IP} dev ${BRIDGE} 2>/dev/null; ip link set ${BRIDGE} up; sysctl -qw net.ipv4.ip_forward=1; nft -f /etc/nftables-workdir.nft'
+[Install]
+WantedBy=multi-user.target
+EOF
+echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-workdir.conf
+systemctl daemon-reload
+systemctl enable --now workdir-net >/dev/null 2>&1
+
+# ufw must allow forwarded (routed) traffic for sandbox egress
+if command -v ufw >/dev/null 2>&1; then
+  sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+  ufw allow 22/tcp >/dev/null 2>&1 || true
+  yes | ufw enable >/dev/null 2>&1 || true
+  ufw reload >/dev/null 2>&1 || true
+fi
+log "  uplink=$UPLINK, forwarding on, ufw routes allowed"
+
+# --- 5. build the daemon ---------------------------------------------------
+if ! command -v cargo >/dev/null 2>&1; then
+  log "installing Rust"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null 2>&1
+fi
+# shellcheck disable=SC1090
+. "$HOME/.cargo/env" 2>/dev/null || . /root/.cargo/env
+log "building workdir (this takes a few minutes)"
+( cd "$REPO_ROOT" && cargo build --release -p sandboxd )
+install -m755 "$REPO_ROOT/target/release/workdir" /usr/local/bin/workdir
+install -m755 "$REPO_ROOT/target/release/sandbox-guest-agent" "$DATA_DIR/sandbox-guest-agent"
+
+# --- 6. base image ---------------------------------------------------------
+log "building base curated image"
+bash "$REPO_ROOT/deploy/build-image.sh" base
+# node-python shares the base contents (bigger disk knob)
+install -d -o workdir -g workdir "$DATA_DIR/images/node-python"
+cp "$DATA_DIR/images/base/rootfs.ext4" "$DATA_DIR/images/node-python/rootfs.ext4"
+chown -R workdir:workdir "$DATA_DIR/images"
+
+# --- 7. config + service ---------------------------------------------------
+if [ ! -f /root/workdir-admin-key.txt ]; then
+  echo "sk_live_$(openssl rand -hex 24)" > /root/workdir-admin-key.txt
+  chmod 600 /root/workdir-admin-key.txt
+fi
+ADMIN_KEY="$(cat /root/workdir-admin-key.txt)"
+if [ ! -f /etc/workdir/config.toml ]; then
+  cat > /etc/workdir/config.toml <<EOF
+[server]
+bind = "127.0.0.1:8080"
+public_domain = "workdir.dev"
+public_https = true
+data_dir = "$DATA_DIR"
+
+[node]
+role = "all-in-one"
+
+[runtime]
+kind = "firecracker"
+firecracker_bin = "/usr/local/bin/firecracker"
+jailer_bin = "/usr/local/bin/jailer"
+kernel_image = "$DATA_DIR/kernel/vmlinux"
+images_dir = "$DATA_DIR/images"
+workspace_dir = "$DATA_DIR/workspaces"
+
+[hotpool]
+enabled = true
+
+[auth]
+bootstrap_admin_key = "$ADMIN_KEY"
+bootstrap_org = "org_admin"
+EOF
+  chown workdir:workdir /etc/workdir/config.toml
+fi
+
+install -m644 "$REPO_ROOT/deploy/systemd/workdir.service" /etc/systemd/system/workdir.service
+systemctl daemon-reload
+systemctl enable --now workdir >/dev/null 2>&1
+sleep 2
+
+log "done."
+echo
+echo "  node:       $(hostname)"
+echo "  admin key:  $ADMIN_KEY   (saved to /root/workdir-admin-key.txt)"
+echo "  health:     $(curl -s --max-time 5 127.0.0.1:8080/healthz || echo 'starting...')"
+echo
+echo "  Next: expose it via a Cloudflare Tunnel (see docs/RUNBOOK.md §Tunnel)."
