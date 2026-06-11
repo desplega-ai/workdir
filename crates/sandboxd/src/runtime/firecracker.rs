@@ -253,17 +253,15 @@ impl FirecrackerRuntime {
         );
         stream.write_all(req.as_bytes()).await?;
         stream.flush().await?;
+        // We send `Connection: close`, so Firecracker closes after responding —
+        // read to EOF so error responses include the body (Firecracker's
+        // `fault_message`), which is essential for diagnosing failures.
         let mut resp = Vec::new();
         let mut buf = [0u8; 2048];
         loop {
             match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
                 Ok(Ok(0)) => break,
-                Ok(Ok(n)) => {
-                    resp.extend_from_slice(&buf[..n]);
-                    if resp.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break; // full headers (incl. status line) received
-                    }
-                }
+                Ok(Ok(n)) => resp.extend_from_slice(&buf[..n]),
                 Ok(Err(e)) => return Err(anyhow::Error::from(e).context("read firecracker api response")),
                 Err(_) => break, // read timeout — proceed with what we have
             }
@@ -271,7 +269,10 @@ impl FirecrackerRuntime {
         let text = String::from_utf8_lossy(&resp);
         let status = text.lines().next().unwrap_or("");
         if !(status.contains(" 200") || status.contains(" 201") || status.contains(" 204")) {
-            bail!("firecracker api {method} {path} failed: {status}");
+            // Include the response body (Firecracker's fault_message) after the
+            // headers, so the error is actionable.
+            let body = text.split("\r\n\r\n").nth(1).unwrap_or("").trim();
+            bail!("firecracker api {method} {path} failed: {} {}", status.trim(), body);
         }
         Ok(())
     }
