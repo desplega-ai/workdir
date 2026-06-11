@@ -88,6 +88,20 @@ Each microVM gets a host tap (`wdtapN`) attached to bridge `wdbr0`. The guest is
 `10.200.0.<n>/16`, gateway `10.200.0.1` (the bridge), DNS `1.1.1.1`. Egress is
 NAT-masqueraded out the uplink. Cloud-metadata IPs and outbound SMTP are dropped.
 
+**Tenant isolation & abuse controls** (in the nftables `forward` chain +
+firecracker tap setup):
+- Taps are **isolated bridge ports** — a guest reaches the gateway/internet but
+  **not other sandboxes** (cross-tenant L2 isolation), backed by an nftables
+  `10.200/16 → 10.200/16 drop`.
+- New outbound connections are **rate-limited per guest** (`meter wd_newconn`,
+  80/s) to blunt port scanners / connection floods.
+- Operator kill switch: `POST /v1/admin/orgs/:org/suspend` (stops the org's
+  sandboxes + blocks creates) and `…/unsuspend`. The bootstrap admin org can't
+  be suspended, and admin keys are never locked out by suspension.
+- Credit enforcement: a background loop stops an org's sandboxes when its
+  real-time balance hits zero; per-sandbox egress bytes are in
+  `/v1/admin/metrics` for spotting miners/scanners.
+
 Gotchas:
 - The daemon needs **`CAP_NET_ADMIN`** (set in `workdir.service`) to manage taps.
 - **ufw** must have `DEFAULT_FORWARD_POLICY="ACCEPT"`, else forwarded sandbox

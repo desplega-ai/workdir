@@ -54,6 +54,47 @@ pub fn spawn_idle_reaper(state: AppState) {
     });
 }
 
+/// Stop sandboxes for orgs whose real-time balance has hit zero. Persisted
+/// `spent_usd` only updates when an interval closes, so without this a
+/// long-running sandbox bills indefinitely past the org's prepaid credit
+/// (review #8). The bootstrap admin org is exempt (mirrors the create bypass).
+pub fn spawn_credit_enforcer(state: AppState) {
+    tokio::spawn(async move {
+        let admin_org = state.cfg.auth.bootstrap_org.clone();
+        loop {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            let active = match state.store.all_active_sandboxes() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let now = Utc::now();
+            // Distinct orgs that currently have running sandboxes.
+            let mut orgs: Vec<String> = active.iter().map(|s| s.org_id.clone()).collect();
+            orgs.sort();
+            orgs.dedup();
+            for org_id in orgs {
+                if org_id == admin_org {
+                    continue;
+                }
+                let org = match state.store.get_org(&org_id) {
+                    Ok(Some(o)) => o,
+                    _ => continue,
+                };
+                let intervals = state.store.usage_for_org(&org_id).unwrap_or_default();
+                if crate::usage::live_balance_usd(&org, &intervals, now) > 0.0 {
+                    continue;
+                }
+                tracing::warn!(org = %org_id, "org out of credit — stopping its sandboxes");
+                for sb in active.iter().filter(|s| s.org_id == org_id && s.state == State::Running) {
+                    if let Err(e) = service::stop_sandbox(&state, sb.clone()).await {
+                        tracing::warn!(error = %e, sandbox = %sb.id, "credit-stop failed");
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Garbage-collect expired ephemeral images once no active sandbox references
 /// them (feature). Soft-deletes so running sandboxes are unaffected (spec §25.3).
 pub fn spawn_image_gc(state: AppState) {

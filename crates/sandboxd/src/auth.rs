@@ -44,7 +44,10 @@ pub fn authenticate(store: &Store, bearer: Option<&str>) -> AuthOutcome {
         return AuthOutcome::Invalid;
     }
     match store.get_org(&key.org_id) {
-        Ok(Some(org)) if org.status == OrgStatus::Suspended => AuthOutcome::Suspended,
+        // Admin keys are never locked out by suspension — otherwise suspending
+        // an org (or the admin's own org) would lock the operator out of the
+        // very endpoint that lifts the suspension.
+        Ok(Some(org)) if org.status == OrgStatus::Suspended && !key.admin => AuthOutcome::Suspended,
         Ok(Some(_)) => AuthOutcome::Ok(AuthContext { org_id: key.org_id, admin: key.admin }),
         _ => AuthOutcome::Invalid,
     }

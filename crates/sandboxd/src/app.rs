@@ -66,6 +66,7 @@ async fn serve(cfg: Config) -> Result<()> {
 
     background::spawn_warmer(state.clone());
     background::spawn_idle_reaper(state.clone());
+    background::spawn_credit_enforcer(state.clone());
     background::spawn_image_gc(state.clone());
     background::spawn_heartbeat(state.clone());
 

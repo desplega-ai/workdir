@@ -19,8 +19,8 @@
 
 use super::workspace::Workspaces;
 use super::{
-    DirEntry, ExecRequest, ExecResult, PtySession, Runtime, SnapshotArtifact, VmInstance, VmSpec,
-    WarmVm,
+    DirEntry, ExecRequest, ExecResult, NetStats, PtySession, Runtime, SnapshotArtifact, VmInstance,
+    VmSpec, WarmVm,
 };
 use crate::config::RuntimeConfig;
 use crate::ids;
@@ -279,6 +279,11 @@ impl FirecrackerRuntime {
             let _ = run_ip(&["link", "del", &tap]).await; // clear any stale device
             run_ip(&["tuntap", "add", &tap, "mode", "tap"]).await.context("create tap")?;
             run_ip(&["link", "set", &tap, "master", NET_BRIDGE]).await.context("attach tap to bridge")?;
+            // Isolated bridge port: the guest can reach the gateway/uplink (NAT
+            // egress) but NOT other sandboxes' taps — cross-tenant L2 isolation.
+            run_ip(&["link", "set", &tap, "type", "bridge_slave", "isolated", "on"])
+                .await
+                .context("isolate tap")?;
             run_ip(&["link", "set", &tap, "up"]).await.context("bring tap up")?;
         }
 
@@ -580,6 +585,18 @@ impl Runtime for FirecrackerRuntime {
     fn image_available(&self, image_key: &str) -> bool {
         // Curated images live at images_dir/<key>/rootfs.ext4.
         self.images_dir.join(image_key).join("rootfs.ext4").exists()
+    }
+
+    fn vm_net_stats(&self, handle: &str) -> Option<NetStats> {
+        let tap = self.vms.lock().unwrap().get(handle).and_then(|r| r.tap.clone())?;
+        // Host tap rx == guest egress, tx == guest ingress (mirrored from the VM).
+        let stat = |f: &str| -> u64 {
+            std::fs::read_to_string(format!("/sys/class/net/{tap}/statistics/{f}"))
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0)
+        };
+        Some(NetStats { rx_bytes: stat("rx_bytes"), tx_bytes: stat("tx_bytes") })
     }
 
     async fn prewarm(&self, spec: &VmSpec) -> Result<WarmVm> {

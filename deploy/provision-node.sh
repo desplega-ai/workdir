@@ -74,8 +74,13 @@ cat > /etc/nftables-workdir.nft <<NFT
 table inet workdir {
   chain forward {
     type filter hook forward priority filter; policy accept;
+    # cloud-metadata + outbound SMTP are blocked for sandboxes
     ip saddr ${SANDBOX_CIDR} ip daddr { 169.254.169.254, 169.254.0.0/16 } drop
     ip saddr ${SANDBOX_CIDR} tcp dport { 25, 465, 587 } drop
+    # cross-tenant: no sandbox-to-sandbox traffic (bridge ports are also isolated)
+    ip saddr ${SANDBOX_CIDR} ip daddr ${SANDBOX_CIDR} drop
+    # abuse: cap new outbound connections per guest (catches port scanners/floods)
+    ip saddr ${SANDBOX_CIDR} ct state new meter wd_newconn { ip saddr limit rate over 80/second } drop
   }
   chain postrouting {
     type nat hook postrouting priority srcnat; policy accept;
