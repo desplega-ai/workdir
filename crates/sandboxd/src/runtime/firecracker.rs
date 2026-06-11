@@ -710,10 +710,21 @@ impl FirecrackerRuntime {
         self.fc_api(sock, "PATCH", "/vm", &json!({"state": "Paused"})).await?;
         let snap_file = jail.join("snapshot.file");
         let mem_file = jail.join("mem.file");
+        // Under the jailer, Firecracker is chrooted to `jail`, so it must be given
+        // chroot-relative paths — it writes them inside the chroot it owns, which
+        // lands them at `jail/<name>` on the host. A direct launch uses the
+        // absolute host path. (Absolute paths handed to the chrooted process
+        // resolve under the chroot and fail, which is the snapshot/create error
+        // the jailer node hit.)
+        let (snap_api, mem_api) = if self.use_jailer {
+            ("snapshot.file".to_string(), "mem.file".to_string())
+        } else {
+            (snap_file.to_string_lossy().into_owned(), mem_file.to_string_lossy().into_owned())
+        };
         self.fc_api(sock, "PUT", "/snapshot/create", &json!({
             "snapshot_type": "Full",
-            "snapshot_path": snap_file.to_str().unwrap(),
-            "mem_file_path": mem_file.to_str().unwrap(),
+            "snapshot_path": snap_api,
+            "mem_file_path": mem_api,
         })).await?;
         Ok((snap_file, mem_file))
     }
@@ -924,13 +935,13 @@ impl Runtime for FirecrackerRuntime {
         // snapshot, and wait for the guest agent. After a control-plane restart
         // the in-memory record is gone, so rehydrate it from disk first.
         self.ensure_record_loaded(handle);
-        let (api_sock, jail, vsock_fc, cid, tap, tap_idx) = {
+        let (api_sock, jail, vsock_uds, cid, tap, tap_idx) = {
             let vms = self.vms.lock().unwrap();
             let v = vms.get(handle).ok_or_else(|| anyhow!("unknown vm {handle} (no persisted record)"))?;
             (
                 v.api_sock.clone(),
                 v.api_sock.parent().unwrap().to_path_buf(),
-                v.vsock_fc.clone(),
+                v.vsock_uds.clone(),
                 v.cid,
                 v.tap.clone(),
                 v.tap_idx,
@@ -949,14 +960,16 @@ impl Runtime for FirecrackerRuntime {
 
         // Relaunch Firecracker against the same control socket.
         //
-        // NOTE: this relaunch is a direct Firecracker process. Re-entering the
-        // jailer chroot on restore is a follow-up; the microVM is still the
-        // isolation boundary, so this is a defense-in-depth reduction (logged),
-        // not a VM-escape. Tracked for the jailer-restore increment.
+        // NOTE: this relaunch is a direct (unchrooted) Firecracker process, so it
+        // is handed ABSOLUTE host paths (api sock, vsock uds, snapshot, mem) —
+        // they land exactly where the host expects. Re-entering the jailer chroot
+        // on restore is a follow-up; the microVM is still the isolation boundary,
+        // so this is a defense-in-depth reduction (logged), not a VM-escape.
         if self.use_jailer {
             tracing::warn!(handle, "restore relaunches Firecracker unjailed (jailer-restore pending)");
         }
         let _ = std::fs::remove_file(&api_sock);
+        let _ = std::fs::remove_file(&vsock_uds); // clear the evicted run's stale socket
         let log = std::fs::File::create(jail.join("restore.log")).context("restore log")?;
         let log2 = log.try_clone().context("restore log clone")?;
         let child = tokio::process::Command::new(&self.firecracker_bin)
@@ -973,11 +986,12 @@ impl Runtime for FirecrackerRuntime {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        // Re-establish the vsock backend (host UDS is not part of the snapshot),
-        // mirroring the boot() snapshot path.
+        // Re-establish the vsock backend (host UDS is not part of the snapshot)
+        // at the ABSOLUTE host path, so the unchrooted relaunch creates the socket
+        // exactly where the host agent connects.
         self.fc_api(&api_sock, "PUT", "/vsock", &json!({
             "guest_cid": cid,
-            "uds_path": vsock_fc,
+            "uds_path": vsock_uds.to_str().unwrap(),
         })).await?;
 
         let snap_file = jail.join("snapshot.file");
