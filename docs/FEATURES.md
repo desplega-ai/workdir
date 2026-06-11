@@ -9,7 +9,7 @@ and preserve the cheap default path (a no-option `create()` is unchanged).
 ## 1. Secret management
 
 Org-scoped secrets, **encrypted at rest** with AES-256-GCM. The encryption key
-is kept out of the database (env `SANDBOXD_SECRET_KEY` base64-32-bytes, or a
+is kept out of the database (env `WORKDIR_SECRET_KEY` base64-32-bytes, or a
 `0600` `secret.key` file under `data_dir`, generated on first boot). Plaintext
 values are never returned over the API, never logged, and never written into a
 snapshot.
@@ -159,5 +159,5 @@ corresponding tooling baked in (added to the §10.3 image-build pipeline):
 - **s3-mount support**: the `mount-s3` binary + FUSE.
 
 Secret management needs no image changes (host-side). Set
-`SANDBOXD_SECRET_KEY` (or back up the generated `data_dir/secret.key`) so
+`WORKDIR_SECRET_KEY` (or back up the generated `data_dir/secret.key`) so
 secrets survive a node rebuild.

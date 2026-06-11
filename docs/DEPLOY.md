@@ -38,8 +38,8 @@ build host (or in CI) and ship the binary:
 
 ```bash
 cargo build --release -p sandboxd
-# produces target/release/sandboxd  (and target/release/sandbox-guest-agent)
-scp target/release/sandboxd root@<node>:/usr/local/bin/sandboxd
+# produces target/release/workdir  (and target/release/sandbox-guest-agent)
+scp target/release/workdir root@<node>:/usr/local/bin/workdir
 ```
 
 The guest agent (`target/release/sandbox-guest-agent`) is baked into the curated
@@ -55,7 +55,7 @@ preview/VNC proxy (spec §6.2). This is what lets a customer start with one chea
 dedicated server.
 
 ```bash
-curl -fsSL https://deploy.example.com/install.sh | sudo bash -s -- \
+curl -fsSL https://workdir.dev/install.sh | sudo bash -s -- \
   --role all-in-one \
   --domain sandboxes.example.com
 ```
@@ -70,17 +70,17 @@ The installer (`deploy/install.sh`) performs the spec §7.3 sequence:
 4. Installs and enables the host-agent systemd unit.
 5. Configures cgroups v2 and nftables/NAT (`deploy/nftables/sandbox-nat.nft`).
 6. Installs the preview/VNC proxy (part of the `sandboxd` binary).
-7. Writes `/etc/sandboxd/config.toml`, downloads curated image metadata.
+7. Writes `/etc/workdir/config.toml`, downloads curated image metadata.
 8. Runs a validation sandbox and reports capacity.
 
 The admin API key is printed **once** to the journal:
 
 ```bash
-journalctl -u sandboxd | grep 'admin API key'
+journalctl -u workdir | grep 'admin API key'
 ```
 
 > Run the installer locally first with `SKIP_BUILD=1 ./deploy/install.sh
-> --bin ./target/release/sandboxd ...` to preview the preflight on a test box.
+> --bin ./target/release/workdir ...` to preview the preflight on a test box.
 
 ### DNS
 
@@ -98,7 +98,7 @@ sandboxd on 443 → the configured `bind`.
 ### Verify
 
 ```bash
-sandboxd doctor --config /etc/sandboxd/config.toml
+workdir doctor --config /etc/workdir/config.toml
 curl -s http://127.0.0.1:8080/healthz
 ```
 
@@ -117,7 +117,7 @@ monthly cost.
      curl -s -X POST https://api.sandboxes.example.com/v1/nodes/join-token \
        -H "Authorization: Bearer <admin-key>"
 4. Run the worker install (preflight validates KVM before joining):
-     curl -fsSL https://deploy.example.com/install.sh | sudo bash -s -- \
+     curl -fsSL https://workdir.dev/install.sh | sudo bash -s -- \
        --role worker \
        --control-plane https://api.sandboxes.example.com \
        --join-token <token>
@@ -190,8 +190,8 @@ switches share the same mechanism.)
 
 ## 7. Configuration reference
 
-`/etc/sandboxd/config.toml` — see [`deploy/config.example.toml`](../deploy/config.example.toml)
-or run `sandboxd gen-config`. Key fields:
+`/etc/workdir/config.toml` — see [`deploy/config.example.toml`](../deploy/config.example.toml)
+or run `workdir gen-config`. Key fields:
 
 | Section | Field | Meaning |
 |---|---|---|
@@ -204,9 +204,9 @@ or run `sandboxd gen-config`. Key fields:
 | `hotpool` | `enabled`, `base_target`, `warm_interval_seconds` | hot-pool warmer |
 | `auth` | `bootstrap_admin_key`, `bootstrap_org` | first-boot admin key |
 
-Environment overrides (handy for containers/tests): `SANDBOXD_BIND`,
-`SANDBOXD_DATA_DIR`, `SANDBOXD_PUBLIC_DOMAIN`, `SANDBOXD_RUNTIME`,
-`SANDBOXD_ADMIN_KEY`, `SANDBOXD_CONFIG`.
+Environment overrides (handy for containers/tests): `WORKDIR_BIND`,
+`WORKDIR_DATA_DIR`, `WORKDIR_PUBLIC_DOMAIN`, `WORKDIR_RUNTIME`,
+`WORKDIR_ADMIN_KEY`, `WORKDIR_CONFIG`.
 
 ---
 

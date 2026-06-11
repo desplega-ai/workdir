@@ -6,15 +6,15 @@ cd "$(dirname "$0")/.."
 
 cargo build --release -p sandboxd
 
-export SANDBOXD_DATA_DIR="${SANDBOXD_DATA_DIR:-/tmp/sandboxd-dev}"
-export SANDBOXD_RUNTIME=mock
-export SANDBOXD_ALLOW_INSECURE_RUNTIME=1   # mock = dev only, no isolation
-export SANDBOXD_BIND=127.0.0.1:8080
-export SANDBOXD_PUBLIC_DOMAIN=sandboxes.local
-export SANDBOXD_ADMIN_KEY=sk_live_dev
-rm -rf "$SANDBOXD_DATA_DIR"
+export WORKDIR_DATA_DIR="${WORKDIR_DATA_DIR:-/tmp/sandboxd-dev}"
+export WORKDIR_RUNTIME=mock
+export WORKDIR_ALLOW_INSECURE_RUNTIME=1   # mock = dev only, no isolation
+export WORKDIR_BIND=127.0.0.1:8080
+export WORKDIR_PUBLIC_DOMAIN=sandboxes.local
+export WORKDIR_ADMIN_KEY=sk_live_dev
+rm -rf "$WORKDIR_DATA_DIR"
 
-./target/release/sandboxd serve & SERVER=$!
+./target/release/workdir serve & SERVER=$!
 trap 'kill $SERVER 2>/dev/null || true' EXIT
 for i in $(seq 1 40); do curl -fsS 127.0.0.1:8080/healthz >/dev/null 2>&1 && break; sleep 0.25; done
 sleep 2  # let the base hot pool warm

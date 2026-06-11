@@ -1,6 +1,6 @@
 # Setup
 
-How to build and run **sandboxd** — for local development, on a LAN, and in
+How to build and run **workdir** — for local development, on a LAN, and in
 production. For the full deployment guide see [docs/DEPLOY.md](docs/DEPLOY.md);
 for architecture see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -27,9 +27,9 @@ source "$HOME/.cargo/env"
 ## 2. Clone & build
 
 ```bash
-git clone git@github.com:mv37-org/workdir.git sandboxd
-cd sandboxd
-cargo build --release        # produces target/release/sandboxd and sandbox-guest-agent
+git clone git@github.com:mv37-org/workdir.git workdir
+cd workdir
+cargo build --release        # produces target/release/workdir and sandbox-guest-agent
 cargo test                   # 30 unit + integration tests
 ```
 
@@ -43,12 +43,12 @@ refuses to start without an explicit opt-in. Dev/LAN only — never expose it to
 an untrusted network.
 
 ```bash
-SANDBOXD_DATA_DIR=/tmp/sandboxd \
-SANDBOXD_RUNTIME=mock \
-SANDBOXD_ALLOW_INSECURE_RUNTIME=1 \
-SANDBOXD_ADMIN_KEY=sk_live_dev \
-SANDBOXD_PUBLIC_DOMAIN=sandboxes.local \
-  ./target/release/sandboxd serve
+WORKDIR_DATA_DIR=/tmp/workdir \
+WORKDIR_RUNTIME=mock \
+WORKDIR_ALLOW_INSECURE_RUNTIME=1 \
+WORKDIR_ADMIN_KEY=sk_live_dev \
+WORKDIR_PUBLIC_DOMAIN=sandboxes.local \
+  ./target/release/workdir serve
 ```
 
 Smoke-test it:
@@ -56,7 +56,7 @@ Smoke-test it:
 ```bash
 bash examples/quickstart_dev.sh          # create → exec → preview → delete
 # or the Python SDK:
-SANDBOXD_URL=http://127.0.0.1:8080 SANDBOXD_KEY=sk_live_dev python3 sdk/python/sandbox_sdk.py
+WORKDIR_URL=http://127.0.0.1:8080 WORKDIR_KEY=sk_live_dev python3 sdk/python/sandbox_sdk.py
 ```
 
 ---
@@ -87,13 +87,13 @@ format.
 
 ```bash
 # On a KVM-capable dedicated server (Ubuntu 24.04 / Debian 12):
-curl -fsSL https://deploy.example.com/install.sh | sudo bash -s -- \
+curl -fsSL https://workdir.dev/install.sh | sudo bash -s -- \
   --role all-in-one --domain sandboxes.example.com
 ```
 
 The installer runs preflight (and **fails clearly without KVM**), installs
 Firecracker + jailer + the systemd unit + nftables policy, writes
-`/etc/sandboxd/config.toml`, and prints the admin key once. Full walkthrough,
+`/etc/workdir/config.toml`, and prints the admin key once. Full walkthrough,
 scaling, and draining: [docs/DEPLOY.md](docs/DEPLOY.md).
 
 > **Note:** the `firecracker` runtime needs a guest `vmlinux` and rootfs images
@@ -108,9 +108,9 @@ scaling, and draining: [docs/DEPLOY.md](docs/DEPLOY.md).
 Generate a starter config or inspect the resolved one:
 
 ```bash
-./target/release/sandboxd gen-config > config.toml     # example config
-./target/release/sandboxd doctor                        # show config + KVM/memory detection
-./target/release/sandboxd serve --config config.toml
+./target/release/workdir gen-config > config.toml     # example config
+./target/release/workdir doctor                        # show config + KVM/memory detection
+./target/release/workdir serve --config config.toml
 ```
 
 Reference: [`deploy/config.example.toml`](deploy/config.example.toml).
@@ -119,30 +119,30 @@ Reference: [`deploy/config.example.toml`](deploy/config.example.toml).
 
 | Variable | Meaning |
 |---|---|
-| `SANDBOXD_CONFIG` | path to `config.toml` |
-| `SANDBOXD_BIND` | listen address (default `0.0.0.0:8080`) |
-| `SANDBOXD_DATA_DIR` | state dir (DB, key, workspaces) |
-| `SANDBOXD_RUNTIME` | `mock` or `firecracker` |
-| `SANDBOXD_ALLOW_INSECURE_RUNTIME` | `1` to permit the `mock` runtime (dev only) |
-| `SANDBOXD_ADMIN_KEY` | seed a known admin key (else generated + printed once) |
-| `SANDBOXD_PUBLIC_DOMAIN` | wildcard domain for preview URLs |
-| `SANDBOXD_PUBLIC_HTTPS` | `true`/`false` scheme in preview URLs |
-| `SANDBOXD_PUBLIC_PORT` | include this port in preview URLs (non-443/80) |
-| `SANDBOXD_SECRET_KEY` | base64 32-byte AES key for secret encryption |
+| `WORKDIR_CONFIG` | path to `config.toml` |
+| `WORKDIR_BIND` | listen address (default `0.0.0.0:8080`) |
+| `WORKDIR_DATA_DIR` | state dir (DB, key, workspaces) |
+| `WORKDIR_RUNTIME` | `mock` or `firecracker` |
+| `WORKDIR_ALLOW_INSECURE_RUNTIME` | `1` to permit the `mock` runtime (dev only) |
+| `WORKDIR_ADMIN_KEY` | seed a known admin key (else generated + printed once) |
+| `WORKDIR_PUBLIC_DOMAIN` | wildcard domain for preview URLs |
+| `WORKDIR_PUBLIC_HTTPS` | `true`/`false` scheme in preview URLs |
+| `WORKDIR_PUBLIC_PORT` | include this port in preview URLs (non-443/80) |
+| `WORKDIR_SECRET_KEY` | base64 32-byte AES key for secret encryption |
 
 ---
 
 ## 7. Secrets & keys — back these up
 
-On first boot, sandboxd generates an **AES master key** at
+On first boot, workdir generates an **AES master key** at
 `<data_dir>/secret.key` (mode `0600`) used to encrypt org secrets at rest. It is
 `.gitignore`d and **must not be committed**.
 
-- Back up `secret.key` (or set `SANDBOXD_SECRET_KEY` from a vault) so stored
+- Back up `secret.key` (or set `WORKDIR_SECRET_KEY` from a vault) so stored
   secrets survive a node rebuild — without it, encrypted secrets are
   unrecoverable.
 - The admin API key is shown once in the logs:
-  `journalctl -u sandboxd | grep 'admin API key'` (prod) or the startup banner.
+  `journalctl -u workdir | grep 'admin API key'` (prod) or the startup banner.
 
 Never commit `secret.key`, `admin-key.txt`, `*.db`, or a `config.toml`
 containing `bootstrap_admin_key`.

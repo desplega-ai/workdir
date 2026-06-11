@@ -8,7 +8,7 @@ are the reviewers'.
 
 | ID | Finding | Fix |
 |----|---------|-----|
-| C1 | The zero-isolation `mock` runtime could be selected in production via config/env with no guard, and reported `kvm_ok=true`. | `serve` now **refuses to start** with `runtime=mock` unless `SANDBOXD_ALLOW_INSECURE_RUNTIME=1` is set, and logs a loud warning. (`app.rs`) |
+| C1 | The zero-isolation `mock` runtime could be selected in production via config/env with no guard, and reported `kvm_ok=true`. | `serve` now **refuses to start** with `runtime=mock` unless `WORKDIR_ALLOW_INSECURE_RUNTIME=1` is set, and logs a loud warning. (`app.rs`) |
 | C2 | The Firecracker file API passed raw user paths to the guest agent — no workspace jail, so `PUT /files {"path":"/etc/passwd"}` could clobber guest files. | `jail_guest_path` confines `read_file`/`write_file`/`list_dir` to `/workspace`, rejecting `..`/absolute escapes. (`runtime/firecracker.rs`) |
 
 ## High — fixed

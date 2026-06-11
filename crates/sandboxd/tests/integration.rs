@@ -7,7 +7,7 @@ use sandboxd::config::Config;
 
 async fn spawn_server() -> (String, String, tempfile::TempDir) {
     // The mock runtime is dev-only and refuses to start without this opt-in.
-    std::env::set_var("SANDBOXD_ALLOW_INSECURE_RUNTIME", "1");
+    std::env::set_var("WORKDIR_ALLOW_INSECURE_RUNTIME", "1");
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().to_path_buf();
     let mut cfg = Config::default();

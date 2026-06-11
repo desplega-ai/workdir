@@ -29,13 +29,13 @@ pub struct SecretRecord {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Load the master key from `SANDBOXD_SECRET_KEY` (base64, 32 bytes) if set,
+/// Load the master key from `WORKDIR_SECRET_KEY` (base64, 32 bytes) if set,
 /// else from `<data_dir>/secret.key`, generating one (0600) on first boot.
 pub fn load_or_create_key(data_dir: &Path) -> Result<[u8; 32]> {
-    if let Ok(b64) = std::env::var("SANDBOXD_SECRET_KEY") {
-        let bytes = b64_decode(&b64).map_err(|e| anyhow!("bad SANDBOXD_SECRET_KEY: {e}"))?;
+    if let Ok(b64) = std::env::var("WORKDIR_SECRET_KEY") {
+        let bytes = b64_decode(&b64).map_err(|e| anyhow!("bad WORKDIR_SECRET_KEY: {e}"))?;
         if bytes.len() != 32 {
-            bail!("SANDBOXD_SECRET_KEY must decode to 32 bytes, got {}", bytes.len());
+            bail!("WORKDIR_SECRET_KEY must decode to 32 bytes, got {}", bytes.len());
         }
         let mut key = [0u8; 32];
         key.copy_from_slice(&bytes);

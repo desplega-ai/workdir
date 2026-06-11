@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 
 PORT="${PORT:-8080}"
 RUNTIME="${RUNTIME:-mock}"
-DATA_DIR="${SANDBOXD_DATA_DIR:-$HOME/.sandboxd}"
+DATA_DIR="${WORKDIR_DATA_DIR:-$HOME/.workdir}"
 mkdir -p "$DATA_DIR"
 
 # Stable admin key, generated once and reused across restarts.
@@ -31,17 +31,17 @@ if [[ -z "${LAN_IP:-}" ]]; then
 fi
 [[ -z "${LAN_IP:-}" ]] && LAN_IP="127.0.0.1"
 
-export SANDBOXD_DATA_DIR="$DATA_DIR"
-export SANDBOXD_BIND="0.0.0.0:$PORT"
-export SANDBOXD_PUBLIC_DOMAIN="${LAN_IP}.nip.io"   # wildcard DNS that just works on a LAN
-export SANDBOXD_PUBLIC_HTTPS=false                  # plain http on the LAN
-export SANDBOXD_PUBLIC_PORT="$PORT"                 # so preview URLs include the port
-export SANDBOXD_ADMIN_KEY="$ADMIN_KEY"
-export SANDBOXD_RUNTIME="$RUNTIME"
+export WORKDIR_DATA_DIR="$DATA_DIR"
+export WORKDIR_BIND="0.0.0.0:$PORT"
+export WORKDIR_PUBLIC_DOMAIN="${LAN_IP}.nip.io"   # wildcard DNS that just works on a LAN
+export WORKDIR_PUBLIC_HTTPS=false                  # plain http on the LAN
+export WORKDIR_PUBLIC_PORT="$PORT"                 # so preview URLs include the port
+export WORKDIR_ADMIN_KEY="$ADMIN_KEY"
+export WORKDIR_RUNTIME="$RUNTIME"
 export RUST_LOG="${RUST_LOG:-info,sandboxd=info}"
 
 if [[ "$RUNTIME" == "mock" ]]; then
-  export SANDBOXD_ALLOW_INSECURE_RUNTIME=1
+  export WORKDIR_ALLOW_INSECURE_RUNTIME=1
   echo "!! mock runtime: user commands run on THIS host with no isolation. LAN/dev only."
 fi
 
@@ -66,4 +66,4 @@ cat <<EOF
 
 EOF
 
-exec ./target/release/sandboxd serve
+exec ./target/release/workdir serve

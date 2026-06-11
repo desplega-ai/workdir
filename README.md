@@ -1,121 +1,152 @@
-# sandboxd — Low-Cost Firecracker microVM Sandbox Provider
+<div align="center">
 
-A Rust implementation of the *Low-Cost Sandbox Provider* spec: **one configurable
-Linux sandbox product**, every sandbox a Firecracker microVM on Hetzner dedicated
-servers, optimized for the two public claims — **lowest cost per useful Linux
-sandbox-hour** and **fastest create-to-first-command time**.
+# workdir
 
-The cheapest, fastest path is the default:
+**Run untrusted code in fast, cheap, isolated Linux microVMs.**
 
+Every sandbox is a [Firecracker](https://firecracker-microvm.github.io/) microVM that boots in tens of milliseconds. One small binary gives you the API, scheduler, billing, and host agent — self-host it on a single server, or use the managed cloud at [workdir.dev](https://workdir.dev).
+
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
+[![Cloud](https://img.shields.io/badge/cloud-workdir.dev-black.svg)](https://workdir.dev)
+
+</div>
+
+---
+
+```ts
+import { Client } from "@workdir/sdk";
+
+const workdir = new Client("https://api.workdir.dev", process.env.WORKDIR_API_KEY);
+
+const box = await workdir.sandboxes.create();      // 1 vCPU / 2 GB, boots in ~40ms
+const { stdout } = await box.exec("echo hello");   // → "hello"
+await box.delete();
 ```
-Runtime:    Firecracker microVM
-Image:      base (1 vCPU / 2 GB RAM / 8 GB disk)
-Startup:    none
-Networking: private IP, shared NAT, wildcard preview proxy
-Lifecycle:  auto-stop after 120 s idle
-Target:     Hetzner dedicated root servers
-```
 
-```js
-const sandbox = await client.sandboxes.create();   // 1 vCPU / 2 GB / 8 GB, ~$0.009/hr
-```
+That's the whole idea: a real Linux box for an AI agent, a CI job, or an app preview — created in milliseconds, billed by the second, and thrown away when you're done.
 
-## What this repo contains
+## Why workdir
 
-| Component | Where | Status |
-|---|---|---|
-| Control plane API (all of spec §19) | `crates/sandboxd/src/api` | ✅ working |
-| Constrained resource knobs, pricing, capacity, lifecycle | `crates/sandboxd/src/{knobs,pricing,capacity,lifecycle}.rs` | ✅ working |
-| Placement scheduler (§15 scoring + admission) | `crates/sandboxd/src/scheduler.rs` | ✅ working |
-| Hot pools, idle auto-stop, billing, usage | `src/{hotpool,background,usage}.rs` | ✅ working |
-| Curated image catalog + async custom image build (§10, §11) | `src/{catalog,images}.rs`, `api/images.rs` | ✅ working |
-| Preview / VNC / CDP proxy (§16.2) | `src/api/preview.rs` | ✅ working (HTTP + WS) |
-| Node registry, join token, drain, multi-node scheduling (§8) | `src/{nodes,node}.rs`, `api/nodes.rs` | ✅ working |
-| **Dev runtime** (mock, runs on any OS, real exec/files/preview) | `src/runtime/mock.rs` | ✅ working |
-| **Production runtime** (Firecracker + jailer + vsock guest agent) | `src/runtime/firecracker.rs`, `crates/guest-agent` | ⚙️ implemented; requires a Linux + `/dev/kvm` host to run |
-| Installer, systemd, nftables (§7.3, §16, §18) | `deploy/` | ✅ |
-| Python + TypeScript SDKs (§20) | `sdk/` | ✅ |
-| **Secret management** (AES-GCM at rest, late injection, never snapshotted) | `src/secrets.rs`, `api/secrets.rs` | ✅ working |
-| **Docker-in-docker** (dockerd inside the guest VM) | feature, `runtime/firecracker.rs` | ⚙️ runs on Firecracker w/ docker-capable image |
-| **S3 bucket mounts** (mountpoint-s3 in-guest) | feature | ⚙️ runs on Firecracker w/ `mount-s3` image |
-| **Ephemeral files + images** (inline files; TTL'd auto-GC images) | feature, `background.rs` | ✅ working |
+- **Fast.** Curated images are kept in warm pools, so a default sandbox is ready before most APIs finish their TLS handshake (<50ms p50 to first command).
+- **Cheap.** It runs on plain dedicated servers (think €44/mo Hetzner boxes), packs sandboxes by memory, and bills per second. The default shape targets ~$0.009/sandbox-hour.
+- **Isolated.** Each sandbox is its own Firecracker microVM under the jailer — not a shared container. Run code you don't trust.
+- **Honest.** Every create tells you its boot path (`hot_pool` / `snapshot_restore` / `cold_boot`) and a full timing breakdown. No hiding cold starts behind warm-pool numbers.
+- **One binary.** Control plane, scheduler, host agent, image builder, and preview proxy ship as a single `workdir` binary. Start with one server; add nodes one command at a time.
 
-See [docs/FEATURES.md](docs/FEATURES.md) for the four extended features and
-[docs/REVIEW.md](docs/REVIEW.md) for the code-review findings and fixes.
+## Install
 
-> **Why two runtimes?** Firecracker needs `/dev/kvm`, which only exists on a
-> Linux KVM host (and on Hetzner that means a *dedicated* server — Hetzner Cloud
-> has no nested virtualization, spec §7.2). The `Runtime` trait lets the entire
-> control plane, scheduler, pricing, and API run and be tested anywhere via the
-> `mock` runtime, then drive real microVMs unchanged on a Hetzner node via the
-> `firecracker` runtime. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+### Use the cloud
 
-## Quick start (developer machine — no KVM needed)
+The fastest way to try it — no infra. Get a key at **[workdir.dev](https://workdir.dev)** and point the SDK at `https://api.workdir.dev`.
+
+### Self-host (one server)
+
+On a KVM-capable Linux box (a Hetzner **dedicated** server, Ubuntu 24.04 / Debian 12):
 
 ```bash
-cargo build --release
-SANDBOXD_DATA_DIR=/tmp/sandboxd \
-SANDBOXD_RUNTIME=mock \
-SANDBOXD_ALLOW_INSECURE_RUNTIME=1 \
-SANDBOXD_PUBLIC_DOMAIN=sandboxes.local \
-SANDBOXD_ADMIN_KEY=sk_live_dev \
-  ./target/release/sandboxd serve
-```
-
-> The `mock` runtime executes code on the host with **no isolation** and refuses
-> to start without `SANDBOXD_ALLOW_INSECURE_RUNTIME=1`. It is for local dev only;
-> production uses `firecracker` (the default on Linux).
-
-In another shell:
-
-```bash
-KEY=sk_live_dev; B=http://127.0.0.1:8080
-# default cheap path
-curl -s -X POST $B/v1/sandboxes -H "Authorization: Bearer $KEY"
-# exec
-ID=...   # from the response
-curl -s -X POST $B/v1/sandboxes/$ID/exec -H "Authorization: Bearer $KEY" \
-  -H 'Content-Type: application/json' -d '{"cmd":"echo ok"}'
-```
-
-Or with the Python SDK:
-
-```bash
-SANDBOXD_URL=http://127.0.0.1:8080 SANDBOXD_KEY=sk_live_dev \
-  python3 sdk/python/sandbox_sdk.py
-```
-
-## Deploy to Hetzner
-
-See **[docs/DEPLOY.md](docs/DEPLOY.md)** for the full guide. Short version:
-
-```bash
-# on a Hetzner EX44-class dedicated server (Ubuntu 24.04 / Debian 12, /dev/kvm present)
-curl -fsSL https://deploy.example.com/install.sh | sudo bash -s -- \
+curl -fsSL https://workdir.dev/install.sh | sudo bash -s -- \
   --role all-in-one --domain sandboxes.example.com
 ```
 
-Add capacity one node at a time:
+The installer runs preflight checks (and fails clearly if `/dev/kvm` is missing), installs Firecracker + the systemd service + firewall rules, and prints your admin key once. Full guide: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+
+### Run it locally (no KVM, any OS)
+
+For development you can run the whole product on a Mac or any Linux box using the `mock` runtime — same API, no real VMs:
 
 ```bash
-# control plane:  POST /v1/nodes/join-token  -> <token>
-curl -fsSL https://deploy.example.com/install.sh | sudo bash -s -- \
-  --role worker --control-plane https://api.sandboxes.example.com --join-token <token>
+git clone git@github.com:mv37-org/workdir.git && cd workdir
+cargo build --release
+bash examples/serve_lan.sh          # serves on your LAN, prints URL + admin key
 ```
 
-## Tests
+> The `mock` runtime executes code on the host with **no isolation** and refuses to start without `WORKDIR_ALLOW_INSECURE_RUNTIME=1`. It's for development only — production uses Firecracker. See [SETUP.md](SETUP.md).
 
-```bash
-cargo test            # unit (domain, scheduler, pricing, auth) + integration (API end-to-end)
+## Usage
+
+### Default sandbox
+
+```python
+# pip install workdir
+from workdir import Client
+
+wd = Client("https://api.workdir.dev", api_key="...")
+box = wd.sandboxes.create()
+print(box.exec("python3 -c 'print(2+2)'").stdout)   # "4"
+box.delete()
 ```
 
-## Docs
+### A real workload — clone, install, preview
 
-- [SETUP.md](SETUP.md) — build & run (dev / LAN / production), config, secrets
-- [docs/DEPLOY.md](docs/DEPLOY.md) — Hetzner deployment, scaling, draining, ops playbooks
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — components, runtime abstraction, multi-node design
-- [docs/API.md](docs/API.md) — REST API reference
+```ts
+const box = await workdir.sandboxes.create({
+  resources: { cpu: 2, memoryMb: 4096, diskGb: 16 },
+  startup: {
+    git: { url: "https://github.com/acme/app.git", ref: "main" },
+    commands: [
+      { name: "install", run: "pnpm install --frozen-lockfile" },
+      { name: "dev", run: "pnpm dev --host 0.0.0.0", background: true },
+    ],
+    ports: [3000],
+    ready: { http: "http://127.0.0.1:3000", timeout_seconds: 30 },
+  },
+});
+
+console.log(box.urls.ports["3000"]);   // public preview URL, served through an authenticated proxy
+```
+
+### More capabilities
+
+- **Browser automation** — `image: "browser"` gives you Chromium + Playwright with noVNC and CDP URLs.
+- **Secrets** — store org secrets (encrypted at rest, AES-256-GCM), reference them by name; they're injected at runtime and never land in a snapshot.
+- **Docker-in-Docker** — `docker: { enabled: true }` runs `dockerd` *inside* the microVM (never the host socket).
+- **S3 mounts** — mount a bucket into the sandbox via `mountpoint-s3`.
+- **Ephemeral files & images** — drop inline files into a sandbox at boot, or build throwaway images that auto-expire.
+
+Full reference: **[docs/FEATURES.md](docs/FEATURES.md)** and **[docs/API.md](docs/API.md)**.
+
+## SDKs
+
+| Language | Install | Source |
+|---|---|---|
+| TypeScript / JS | `npm i @workdir/sdk` | [sdk/typescript](sdk/typescript/sandbox.ts) |
+| Python | `pip install workdir` | [sdk/python](sdk/python/sandbox_sdk.py) |
+
+Or just use the REST API directly — it's small and documented in [docs/API.md](docs/API.md).
+
+## How it works
+
+```
+   SDK / REST API
+        │
+   Control plane ── scheduler · billing · image registry · node registry · preview proxy
+        │
+   Data plane ───── Firecracker microVMs (jailer, vsock guest agent, NAT, hot pools)
+```
+
+The control plane is platform-independent and talks to the data plane through a `Runtime` trait. In production that's **Firecracker** on a Linux KVM host; in development it's a **mock** runtime that runs anywhere, so the entire API and SDK surface is testable without a VM. Deep dive: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+## Documentation
+
+- **[SETUP.md](SETUP.md)** — build & run (dev / LAN / production), config, secrets
+- **[docs/DEPLOY.md](docs/DEPLOY.md)** — deploy on Hetzner, scale, drain, ops playbooks
+- **[docs/API.md](docs/API.md)** — REST API reference
+- **[docs/FEATURES.md](docs/FEATURES.md)** — secrets, docker-in-docker, S3 mounts, ephemeral files/images
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — components, runtime abstraction, multi-node design
+
+## Status
+
+Production-ready control plane (API, scheduler, pricing, lifecycle, hot pools, secrets, preview proxy) with full test coverage. The Firecracker data plane runs real microVMs on a KVM host; building the curated guest images (kernel + rootfs with the agent baked in) is the one piece you supply per fleet — see [docs/FEATURES.md](docs/FEATURES.md). Internally the crate is named `sandboxd`; the shipped binary and CLI are `workdir`.
+
+## Contributing
+
+Issues and PRs welcome. `cargo test` runs the unit + integration suite; `cargo clippy` should stay clean. By contributing you agree your contributions are licensed under the AGPL-3.0 (and may be offered under workdir's commercial license).
 
 ## License
 
-Apache-2.0.
+workdir is open source under the **[GNU AGPL-3.0](LICENSE)**.
+
+You can self-host it, modify it, and run it for yourself or your company. The AGPL's network-use clause means that if you offer workdir to others as a hosted service, you must release your source. A **commercial license** (for proprietary/embedded use without AGPL obligations) and the **managed cloud** are available at **[workdir.dev](https://workdir.dev)**.
+
+<sub>Built on <a href="https://firecracker-microvm.github.io/">Firecracker</a>. Not affiliated with AWS.</sub>

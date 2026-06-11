@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# sandboxd installer (spec §7.3). Installs the control plane + host agent on a
+# workdir installer (spec §7.3). Installs the control plane + host agent on a
 # KVM-capable Hetzner dedicated server (Ubuntu 24.04 / Debian 12).
 #
 #   Single node (all-in-one):
-#     curl -fsSL https://deploy.example.com/install.sh | sudo bash -s -- \
+#     curl -fsSL https://workdir.dev/install.sh | sudo bash -s -- \
 #       --role all-in-one --domain sandboxes.example.com --join-token <token>
 #
 #   Worker node:
-#     curl -fsSL https://deploy.example.com/install.sh | sudo bash -s -- \
+#     curl -fsSL https://workdir.dev/install.sh | sudo bash -s -- \
 #       --role worker --control-plane https://api.sandboxes.example.com --join-token <token>
 #
 # The installer MUST fail clearly if KVM is unavailable.
@@ -20,9 +20,9 @@ CONTROL_PLANE=""
 JOIN_TOKEN=""
 ADMIN_KEY=""
 BIND="0.0.0.0:8080"
-SANDBOXD_BIN="${SANDBOXD_BIN:-/usr/local/bin/sandboxd}"
-DATA_DIR="/var/lib/sandboxd"
-USER_NAME="sandboxd"
+WORKDIR_BIN="${WORKDIR_BIN:-/usr/local/bin/workdir}"
+DATA_DIR="/var/lib/workdir"
+USER_NAME="workdir"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
     --join-token)    JOIN_TOKEN="$2"; shift 2;;
     --admin-key)     ADMIN_KEY="$2"; shift 2;;
     --bind)          BIND="$2"; shift 2;;
-    --bin)           SANDBOXD_BIN="$2"; shift 2;;
+    --bin)           WORKDIR_BIN="$2"; shift 2;;
     *) die "unknown argument: $1";;
   esac
 done
@@ -93,7 +93,7 @@ if [[ "$preflight_fail" -ne 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Packages + sandboxd system user (spec §7.3)
+# 2. Packages + workdir system user (spec §7.3)
 # ---------------------------------------------------------------------------
 log "installing dependencies"
 export DEBIAN_FRONTEND=noninteractive
@@ -126,18 +126,18 @@ install_firecracker() {
 install_firecracker
 
 # ---------------------------------------------------------------------------
-# 4. sandboxd binary
+# 4. workdir binary
 # ---------------------------------------------------------------------------
-if [[ ! -x "$SANDBOXD_BIN" ]]; then
+if [[ ! -x "$WORKDIR_BIN" ]]; then
   if [[ "$SKIP_BUILD" == "1" ]]; then
-    die "sandboxd binary not found at $SANDBOXD_BIN and SKIP_BUILD=1"
+    die "workdir binary not found at $WORKDIR_BIN and SKIP_BUILD=1"
   fi
-  warn "sandboxd binary not found at $SANDBOXD_BIN"
-  warn "build it on a build host with: cargo build --release -p sandboxd"
-  warn "then copy target/release/sandboxd to $SANDBOXD_BIN, or pass --bin <path>"
-  die  "no sandboxd binary available"
+  warn "workdir binary not found at $WORKDIR_BIN"
+  warn "build it on a build host with: cargo build --release"
+  warn "then copy target/release/workdir to $WORKDIR_BIN, or pass --bin <path>"
+  die  "no workdir binary available"
 fi
-log "sandboxd binary: $SANDBOXD_BIN ($("$SANDBOXD_BIN" --version 2>/dev/null || echo unknown))"
+log "workdir binary: $WORKDIR_BIN ($("$WORKDIR_BIN" --version 2>/dev/null || echo unknown))"
 
 # ---------------------------------------------------------------------------
 # 5. Networking: nftables NAT + metadata block + SMTP block (spec §16, §18)
@@ -172,52 +172,52 @@ grep -q 'include "/etc/nftables.d/\*.nft"' /etc/nftables.conf 2>/dev/null \
   || echo 'include "/etc/nftables.d/*.nft"' >>/etc/nftables.conf
 nft -f /etc/nftables.d/sandbox-nat.nft 2>/dev/null || warn "nft apply deferred until reboot"
 sysctl -qw net.ipv4.ip_forward=1
-echo 'net.ipv4.ip_forward=1' >/etc/sysctl.d/99-sandboxd.conf
+echo 'net.ipv4.ip_forward=1' >/etc/sysctl.d/99-workdir.conf
 
 # ---------------------------------------------------------------------------
 # 6. Config + systemd unit
 # ---------------------------------------------------------------------------
-log "writing /etc/sandboxd/config.toml"
-mkdir -p /etc/sandboxd
-"$SANDBOXD_BIN" gen-config \
+log "writing /etc/workdir/config.toml"
+mkdir -p /etc/workdir
+"$WORKDIR_BIN" gen-config \
   | sed "s|public_domain = \"sandboxes.example.com\"|public_domain = \"$DOMAIN\"|" \
   | sed "s|bind = \"0.0.0.0:8080\"|bind = \"$BIND\"|" \
   | sed "s|role = \"all-in-one\"|role = \"$ROLE\"|" \
-  > /etc/sandboxd/config.toml
+  > /etc/workdir/config.toml
 
 if [[ "$ROLE" == "worker" ]]; then
   [[ -n "$CONTROL_PLANE" ]] || die "worker role requires --control-plane <url>"
   [[ -n "$JOIN_TOKEN" ]]    || die "worker role requires --join-token <token>"
-  sed -i "s|control_plane_url = \"\"|control_plane_url = \"$CONTROL_PLANE\"|" /etc/sandboxd/config.toml
-  sed -i "s|join_token = \"\"|join_token = \"$JOIN_TOKEN\"|" /etc/sandboxd/config.toml
+  sed -i "s|control_plane_url = \"\"|control_plane_url = \"$CONTROL_PLANE\"|" /etc/workdir/config.toml
+  sed -i "s|join_token = \"\"|join_token = \"$JOIN_TOKEN\"|" /etc/workdir/config.toml
 fi
-[[ -n "$ADMIN_KEY" ]] && sed -i "s|bootstrap_admin_key = \"\"|bootstrap_admin_key = \"$ADMIN_KEY\"|" /etc/sandboxd/config.toml
-chown -R "$USER_NAME:$USER_NAME" /etc/sandboxd "$DATA_DIR"
+[[ -n "$ADMIN_KEY" ]] && sed -i "s|bootstrap_admin_key = \"\"|bootstrap_admin_key = \"$ADMIN_KEY\"|" /etc/workdir/config.toml
+chown -R "$USER_NAME:$USER_NAME" /etc/workdir "$DATA_DIR"
 
 log "installing systemd unit"
-if [[ -f "$(dirname "$0")/systemd/sandboxd.service" ]]; then
-  install -m 0644 "$(dirname "$0")/systemd/sandboxd.service" /etc/systemd/system/sandboxd.service
+if [[ -f "$(dirname "$0")/systemd/workdir.service" ]]; then
+  install -m 0644 "$(dirname "$0")/systemd/workdir.service" /etc/systemd/system/workdir.service
 else
-  cat > /etc/systemd/system/sandboxd.service <<'UNIT'
+  cat > /etc/systemd/system/workdir.service <<'UNIT'
 [Unit]
-Description=sandboxd — low-cost Firecracker microVM sandbox provider
+Description=workdir — low-cost Firecracker microVM sandbox provider
 After=network-online.target nftables.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=sandboxd
-Group=sandboxd
+User=workdir
+Group=workdir
 AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_MKNOD CAP_DAC_OVERRIDE
-Environment=SANDBOXD_CONFIG=/etc/sandboxd/config.toml
+Environment=WORKDIR_CONFIG=/etc/workdir/config.toml
 Environment=RUST_LOG=info,sandboxd=info
-ExecStart=/usr/local/bin/sandboxd serve --config /etc/sandboxd/config.toml
+ExecStart=/usr/local/bin/workdir serve --config /etc/workdir/config.toml
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=1048576
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/lib/sandboxd /etc/sandboxd
+ReadWritePaths=/var/lib/workdir /etc/workdir
 DeviceAllow=/dev/kvm rw
 DeviceAllow=/dev/net/tun rw
 
@@ -226,30 +226,30 @@ WantedBy=multi-user.target
 UNIT
 fi
 systemctl daemon-reload
-systemctl enable --now sandboxd
+systemctl enable --now workdir
 
 # ---------------------------------------------------------------------------
 # 7. Validation sandbox + capacity report (spec §7.3)
 # ---------------------------------------------------------------------------
-log "waiting for sandboxd to become healthy"
+log "waiting for workdir to become healthy"
 for i in $(seq 1 30); do
   curl -fsS "http://127.0.0.1:${BIND##*:}/healthz" >/dev/null 2>&1 && break
   sleep 1
 done
 
 log "running validation sandbox + capacity report"
-"$SANDBOXD_BIN" doctor --config /etc/sandboxd/config.toml || true
+"$WORKDIR_BIN" doctor --config /etc/workdir/config.toml || true
 
 cat <<EOF
 
-$(printf '\033[1;32m✔ sandboxd installed\033[0m')
+$(printf '\033[1;32m✔ workdir installed\033[0m')
   role:           $ROLE
   data dir:       $DATA_DIR
-  config:         /etc/sandboxd/config.toml
-  service:        systemctl status sandboxd
+  config:         /etc/workdir/config.toml
+  service:        systemctl status workdir
   api:            http://127.0.0.1:${BIND##*:}/healthz
   practical units: ~$(( (MEM_GB - 12) / 2 * 20 / 26 )) default-equivalent sandboxes
 
 The admin API key was printed once in the journal:
-  journalctl -u sandboxd | grep 'admin API key'
+  journalctl -u workdir | grep 'admin API key'
 EOF

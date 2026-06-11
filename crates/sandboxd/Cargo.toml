@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Low-cost Firecracker microVM sandbox provider: control plane + host agent."
-default-run = "sandboxd"
+description = "workdir — low-cost Firecracker microVM sandbox provider: control plane + host agent."
+# User-facing binary is `workdir`; the internal library crate stays `sandboxd`.
+default-run = "workdir"
 
 [[bin]]
-name = "sandboxd"
+name = "workdir"
 path = "src/main.rs"
 
 [lib]

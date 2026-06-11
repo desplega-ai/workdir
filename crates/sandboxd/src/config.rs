@@ -91,7 +91,7 @@ impl Default for ServerConfig {
             public_domain: "sandboxes.local".to_string(),
             public_https: true,
             public_port: None,
-            data_dir: PathBuf::from("/var/lib/sandboxd"),
+            data_dir: PathBuf::from("/var/lib/workdir"),
         }
     }
 }
@@ -150,25 +150,25 @@ impl Config {
             }
             _ => Config::default(),
         };
-        if let Ok(v) = std::env::var("SANDBOXD_BIND") {
+        if let Ok(v) = std::env::var("WORKDIR_BIND") {
             cfg.server.bind = v;
         }
-        if let Ok(v) = std::env::var("SANDBOXD_DATA_DIR") {
+        if let Ok(v) = std::env::var("WORKDIR_DATA_DIR") {
             cfg.server.data_dir = PathBuf::from(v);
         }
-        if let Ok(v) = std::env::var("SANDBOXD_PUBLIC_DOMAIN") {
+        if let Ok(v) = std::env::var("WORKDIR_PUBLIC_DOMAIN") {
             cfg.server.public_domain = v;
         }
-        if let Ok(v) = std::env::var("SANDBOXD_PUBLIC_HTTPS") {
+        if let Ok(v) = std::env::var("WORKDIR_PUBLIC_HTTPS") {
             cfg.server.public_https = matches!(v.as_str(), "1" | "true" | "yes");
         }
-        if let Ok(v) = std::env::var("SANDBOXD_PUBLIC_PORT") {
+        if let Ok(v) = std::env::var("WORKDIR_PUBLIC_PORT") {
             cfg.server.public_port = v.parse().ok();
         }
-        if let Ok(v) = std::env::var("SANDBOXD_RUNTIME") {
+        if let Ok(v) = std::env::var("WORKDIR_RUNTIME") {
             cfg.runtime.kind = v;
         }
-        if let Ok(v) = std::env::var("SANDBOXD_ADMIN_KEY") {
+        if let Ok(v) = std::env::var("WORKDIR_ADMIN_KEY") {
             cfg.auth.bootstrap_admin_key = v;
         }
         // Derive runtime storage paths from data_dir when not explicitly set, so
@@ -187,6 +187,6 @@ impl Config {
     }
 
     pub fn db_path(&self) -> PathBuf {
-        self.server.data_dir.join("sandboxd.db")
+        self.server.data_dir.join("workdir.db")
     }
 }

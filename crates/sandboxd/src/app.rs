@@ -14,10 +14,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "sandboxd", version, about = "Low-cost Firecracker microVM sandbox provider")]
+#[command(name = "workdir", version, about = "Low-cost Firecracker microVM sandbox provider")]
 struct Cli {
     /// Path to config.toml.
-    #[arg(long, env = "SANDBOXD_CONFIG")]
+    #[arg(long, env = "WORKDIR_CONFIG")]
     config: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -71,7 +71,7 @@ async fn serve(cfg: Config) -> Result<()> {
 
     let app = crate::api::router(state);
     let listener = tokio::net::TcpListener::bind(&bind).await.with_context(|| format!("bind {bind}"))?;
-    tracing::info!(%bind, "sandboxd listening");
+    tracing::info!(%bind, "workdir listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -108,12 +108,12 @@ pub async fn build_state(cfg: Config) -> Result<crate::state::AppState> {
     let runtime: Arc<dyn Runtime> = match cfg.runtime.kind.as_str() {
         "firecracker" => Arc::new(FirecrackerRuntime::new(&cfg.runtime)),
         "mock" => {
-            let allow = std::env::var("SANDBOXD_ALLOW_INSECURE_RUNTIME").ok().as_deref() == Some("1");
+            let allow = std::env::var("WORKDIR_ALLOW_INSECURE_RUNTIME").ok().as_deref() == Some("1");
             if !allow {
                 anyhow::bail!(
                     "runtime.kind = 'mock' runs untrusted code on the HOST with no isolation and \
                      is for local development only. Refusing to start. Set \
-                     SANDBOXD_ALLOW_INSECURE_RUNTIME=1 to acknowledge this (dev only); use \
+                     WORKDIR_ALLOW_INSECURE_RUNTIME=1 to acknowledge this (dev only); use \
                      'firecracker' in production."
                 );
             }
@@ -243,7 +243,7 @@ fn detect_total_memory_gb() -> f64 {
 }
 
 fn doctor(cfg: &Config) -> Result<()> {
-    println!("sandboxd doctor");
+    println!("workdir doctor");
     println!("  runtime.kind        = {}", cfg.runtime.kind);
     println!("  /dev/kvm present    = {}", std::path::Path::new("/dev/kvm").exists());
     println!("  detected memory GB  = {:.1}", detect_total_memory_gb());

@@ -15,7 +15,7 @@
 *.db-*
 *.sqlite
 *.sqlite-*
-sandboxd.db*
+workdir.db*
 
 # AES master key for secret encryption (CRITICAL — never commit)
 secret.key
