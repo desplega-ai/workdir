@@ -6,8 +6,10 @@
 
 use crate::auth::AuthContext;
 use crate::error::{ApiError, ApiResult};
+use crate::lifecycle::State as LfState;
 use crate::usage::{ApiKey, Org, OrgStatus};
 use crate::state::AppState;
+use crate::{secrets, service, views};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
@@ -120,6 +122,120 @@ pub async fn revoke_key(
     key.disabled = true;
     state.store.put_api_key(&key).map_err(ApiError::Internal)?;
     Ok(Json(json!({ "revoked": true })))
+}
+
+// --- per-org management on behalf of the control panel ----------------------
+// The control panel holds the admin key and acts for a logged-in user's org.
+// All of these verify the resource belongs to `org` so one org's dashboard can
+// never touch another's.
+
+/// List an org's secret names + timestamps (never values).
+pub async fn org_secrets_list(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(org): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    let recs = state.store.list_secrets(&org).map_err(ApiError::Internal)?;
+    let names: Vec<Value> = recs
+        .iter()
+        .map(|r| json!({ "name": r.name, "created_at": r.created_at, "updated_at": r.updated_at }))
+        .collect();
+    Ok(Json(json!({ "secrets": names })))
+}
+
+/// Set (create/overwrite) an org secret. Write-only — the value never reads back.
+pub async fn org_secret_put(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((org, name)): Path<(String, String)>,
+    Json(body): Json<crate::api::secrets::PutSecretBody>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    if state.store.get_org(&org).map_err(ApiError::Internal)?.is_none() {
+        return Err(ApiError::NotFound(format!("org {org}")));
+    }
+    if !secrets::valid_name(&name) {
+        return Err(ApiError::BadRequest(
+            "secret name must be an env-style identifier (letters, digits, underscore; not starting with a digit)".into(),
+        ));
+    }
+    if body.value.len() > 64 * 1024 {
+        return Err(ApiError::BadRequest("secret value too large (max 64 KiB)".into()));
+    }
+    let rec = secrets::encrypt(&state.secret_key, &org, &name, &body.value).map_err(ApiError::Internal)?;
+    state.store.put_secret(&rec).map_err(ApiError::Internal)?;
+    Ok(Json(json!({ "name": name, "stored": true })))
+}
+
+pub async fn org_secret_delete(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((org, name)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    let removed = state.store.delete_secret(&org, &name).map_err(ApiError::Internal)?;
+    if !removed {
+        return Err(ApiError::NotFound(format!("secret {name}")));
+    }
+    Ok(Json(json!({ "name": name, "deleted": true })))
+}
+
+/// List an org's sandboxes (excludes deleted), newest first.
+pub async fn org_sandboxes(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(org): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    let mut sbs = state.store.list_sandboxes_for_org(&org).map_err(ApiError::Internal)?;
+    sbs.retain(|s| s.state != LfState::Deleted);
+    sbs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let views: Vec<Value> = sbs.iter().map(|sb| views::sandbox_view(&state, sb)).collect();
+    Ok(Json(json!({ "sandboxes": views })))
+}
+
+fn owned_sandbox(state: &AppState, org: &str, id: &str) -> ApiResult<crate::model::Sandbox> {
+    let sb = state
+        .store
+        .get_sandbox(id)
+        .map_err(ApiError::Internal)?
+        .filter(|s| s.org_id == org)
+        .ok_or_else(|| ApiError::NotFound(format!("sandbox {id}")))?;
+    Ok(sb)
+}
+
+pub async fn org_sandbox_stop(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((org, id)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    let sb = owned_sandbox(&state, &org, &id)?;
+    let updated = service::stop_sandbox(&state, sb).await?;
+    Ok(Json(views::sandbox_view(&state, &updated)))
+}
+
+pub async fn org_sandbox_delete(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((org, id)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    let sb = owned_sandbox(&state, &org, &id)?;
+    service::delete_sandbox(&state, sb).await?;
+    Ok(Json(json!({ "id": id, "deleted": true })))
+}
+
+/// List an org's custom images (build status, version, timestamps).
+pub async fn org_images(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(org): Path<String>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    let imgs = state.store.list_images_for_org(&org).map_err(ApiError::Internal)?;
+    Ok(Json(json!({ "images": imgs })))
 }
 
 /// Real-time operational metrics: host health + every live sandbox with its
