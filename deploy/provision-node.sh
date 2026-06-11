@@ -144,7 +144,10 @@ if [ ! -f /etc/workdir/config.toml ]; then
   cat > /etc/workdir/config.toml <<EOF
 [server]
 bind = "127.0.0.1:8080"
-public_domain = "workdir.dev"
+# Preview/VNC wildcard domain. Use a SEPARATE registrable domain from the
+# control panel so untrusted preview content is origin-isolated, and keep it a
+# single level (<id>-<port>.workdir.run) so free Cloudflare SSL covers it.
+public_domain = "workdir.run"
 public_https = true
 data_dir = "$DATA_DIR"
 
