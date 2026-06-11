@@ -130,7 +130,7 @@ pub async fn delete(
     Ok(Json(json!({ "id": id, "deleted": true })))
 }
 
-fn image_view(img: &CustomImage) -> Value {
+pub(crate) fn image_view(img: &CustomImage) -> Value {
     json!({
         "id": img.id,
         "name": img.name,

@@ -227,7 +227,7 @@ pub async fn org_sandbox_delete(
     Ok(Json(json!({ "id": id, "deleted": true })))
 }
 
-/// List an org's custom images (build status, version, timestamps).
+/// List an org's custom images (build status, version, log, timestamps).
 pub async fn org_images(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -235,7 +235,27 @@ pub async fn org_images(
 ) -> ApiResult<Json<Value>> {
     require_admin(&ctx)?;
     let imgs = state.store.list_images_for_org(&org).map_err(ApiError::Internal)?;
-    Ok(Json(json!({ "images": imgs })))
+    let views: Vec<Value> = imgs.iter().map(crate::api::images::image_view).collect();
+    Ok(Json(json!({ "images": views })))
+}
+
+/// Soft-delete a custom image (blocks new creates; running sandboxes unaffected).
+pub async fn org_image_delete(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((org, id)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    let mut img = state
+        .store
+        .get_image(&id)
+        .map_err(ApiError::Internal)?
+        .filter(|i| i.org_id == org)
+        .ok_or_else(|| ApiError::NotFound(format!("image {id}")))?;
+    img.status = crate::images::ImageStatus::Deleted;
+    img.updated_at = Utc::now();
+    state.store.put_image(&img).map_err(ApiError::Internal)?;
+    Ok(Json(json!({ "id": id, "deleted": true })))
 }
 
 /// Real-time operational metrics: host health + every live sandbox with its

@@ -53,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/orgs/:org/sandboxes/:id/stop", post(admin::org_sandbox_stop))
         .route("/admin/orgs/:org/sandboxes/:id", delete(admin::org_sandbox_delete))
         .route("/admin/orgs/:org/images", get(admin::org_images))
+        .route("/admin/orgs/:org/images/:id", delete(admin::org_image_delete))
         .route("/admin/keys", post(admin::register_key))
         .route("/admin/keys/:hash", delete(admin::revoke_key))
         .route("/benchmarks", get(usage::benchmarks))
