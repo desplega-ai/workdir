@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS secrets (
     data   TEXT NOT NULL,
     PRIMARY KEY (org_id, name)
 );
+CREATE TABLE IF NOT EXISTS benchmarks (
+    id         TEXT PRIMARY KEY,
+    image      TEXT NOT NULL,
+    boot_path  TEXT NOT NULL,
+    data       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_benchmarks_path ON benchmarks(image, boot_path);
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -535,6 +542,28 @@ impl Store {
             params![org_id, name],
         )?;
         Ok(n > 0)
+    }
+
+    // --- benchmark samples (roadmap Phase 0) ----------------------------
+
+    pub fn put_benchmark_sample(&self, s: &crate::bench::BenchmarkSample) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO benchmarks(id, image, boot_path, data) VALUES(?1, ?2, ?3, ?4)",
+            params![s.id, s.image, s.boot_path.as_str(), serde_json::to_string(s)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn all_benchmark_samples(&self) -> Result<Vec<crate::bench::BenchmarkSample>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT data FROM benchmarks")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = vec![];
+        for r in rows {
+            out.push(serde_json::from_str(&r?)?);
+        }
+        Ok(out)
     }
 }
 

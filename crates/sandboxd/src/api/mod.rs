@@ -34,6 +34,7 @@ pub fn router(state: AppState) -> Router {
         .route("/sandboxes/:id/ports/:port/expose", post(sandboxes::expose_port))
         .route("/sandboxes/:id/browser", post(sandboxes::browser_get).get(sandboxes::browser_get))
         .route("/sandboxes/:id/snapshot", post(sandboxes::snapshot))
+        .route("/sandboxes/:id/fork", post(sandboxes::fork))
         .route("/sandboxes/:id/pause", post(sandboxes::pause))
         .route("/sandboxes/:id/resume", post(sandboxes::resume))
         .route("/images", get(images::list).post(images::create))
@@ -60,6 +61,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/keys", post(admin::register_key))
         .route("/admin/keys/:hash", delete(admin::revoke_key))
         .route("/benchmarks", get(usage::benchmarks))
+        .route("/benchmarks/run", post(usage::run_benchmarks))
         .layer(middleware::from_fn_with_state(state.clone(), auth_mw));
 
     Router::new()

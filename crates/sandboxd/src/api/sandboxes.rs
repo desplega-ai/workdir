@@ -74,7 +74,10 @@ pub async fn exec(
     Path(id): Path<String>,
     Json(body): Json<ExecBody>,
 ) -> ApiResult<Json<Value>> {
-    let mut sb = load_owned(&state, &ctx, &id)?;
+    let sb = load_owned(&state, &ctx, &id)?;
+    // Perpetual standby: a parked sandbox transparently auto-resumes here, so a
+    // client that hasn't touched it in a while just sees a slightly slower exec.
+    let mut sb = service::ensure_running(&state, sb).await?;
     if !sb.state.is_active() {
         return Err(ApiError::Conflict(format!("sandbox is {}", sb.state.as_str())));
     }
@@ -110,6 +113,7 @@ pub async fn read_file(
     Query(q): Query<FileQuery>,
 ) -> ApiResult<Json<Value>> {
     let sb = load_owned(&state, &ctx, &id)?;
+    let sb = service::ensure_running(&state, sb).await?;
     let handle = sb.runtime_handle.clone().ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
     let bytes = state.node_for(sb.node_id.as_deref().unwrap_or("")).read_file(&handle, &q.path).await.map_err(ApiError::Internal)?;
     let body = match String::from_utf8(bytes.clone()) {
@@ -135,6 +139,7 @@ pub async fn write_file(
     Json(body): Json<WriteFileBody>,
 ) -> ApiResult<Json<Value>> {
     let sb = load_owned(&state, &ctx, &id)?;
+    let sb = service::ensure_running(&state, sb).await?;
     let handle = sb.runtime_handle.clone().ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
     let bytes = match body.encoding.as_deref() {
         Some("base64") => unbase64(&body.content).map_err(ApiError::BadRequest)?,
@@ -150,7 +155,8 @@ pub async fn expose_port(
     Extension(ctx): Extension<AuthContext>,
     Path((id, port)): Path<(String, u16)>,
 ) -> ApiResult<Json<Value>> {
-    let mut sb = load_owned(&state, &ctx, &id)?;
+    let sb = load_owned(&state, &ctx, &id)?;
+    let mut sb = service::ensure_running(&state, sb).await?;
     let handle = sb.runtime_handle.clone().ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
     state.node_for(sb.node_id.as_deref().unwrap_or("")).expose_port(&handle, port).await.map_err(ApiError::Internal)?;
     if !sb.ports.contains(&port) {
@@ -198,6 +204,16 @@ pub async fn snapshot(
         "storage_bytes": snap.storage_bytes,
         "created_at": snap.created_at,
     })))
+}
+
+pub async fn fork(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let parent = load_owned(&state, &ctx, &id)?;
+    let child = service::fork_sandbox(&state, &ctx, parent).await?;
+    Ok((StatusCode::CREATED, Json(sandbox_view(&state, &child))))
 }
 
 pub async fn pause(

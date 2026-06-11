@@ -20,9 +20,25 @@ The default create is one call with no body and yields the cheapest, fastest pat
 | `POST` | `/v1/sandboxes/:id/ports/:port/expose` | → `{port, url}` preview route. |
 | `GET`/`POST` | `/v1/sandboxes/:id/browser` | Browser readiness + VNC/CDP urls. |
 | `POST` | `/v1/sandboxes/:id/snapshot` | Snapshot (billed separately). |
+| `POST` | `/v1/sandboxes/:id/fork` | Clone an instant sibling from the parent's live state (`boot_path: "fork"`). |
 | `POST` | `/v1/sandboxes/:id/pause` | Stop (release CPU/mem; keep billing correct). |
 | `POST` | `/v1/sandboxes/:id/resume` | Resume from stopped disk/snapshot. |
 | `DELETE` | `/v1/sandboxes/:id` | Stop, delete ephemeral disk, remove routes. |
+
+### Lifecycle & perpetual standby
+
+States: `creating → running → stopping → {stopped|standby} → resuming → running`,
+plus `deleting → deleted` and `failed`.
+
+- **`stopped`** is a user-initiated pause (`POST .../pause`) and requires an
+  explicit `POST .../resume`.
+- **`standby`** is automatic: when a sandbox is idle past `auto_stop_seconds`,
+  the reaper snapshots it, frees its RAM, and parks it in `standby` at **$0**.
+  The **next request** (`exec`, file read/write, `expose`, `fork`)
+  **transparently auto-resumes** it — the caller just sees a slightly slower
+  first call. To the user the sandbox stays alive; it simply stops costing
+  anything while idle. (Sandboxes with resident secrets are never snapshotted, so
+  they fall back to a plain `stopped` instead.)
 
 ### Create request
 
@@ -164,8 +180,15 @@ one-off images. Full reference: [FEATURES.md](FEATURES.md).
 |---|---|---|
 | `GET` | `/v1/usage` | Org cost, delivered unit-seconds, prepaid balance, per-sandbox. |
 | `GET` | `/v1/admin/overview` | Admin: nodes, hot pools, reconciled at-cost price, abuse alerts. |
-| `GET` | `/v1/benchmarks` | Boot timings p50/p95 by image **and boot path** (labeled). |
+| `GET` | `/v1/benchmarks` | Latency table: p50/p90/p95 by image **and boot path** (`cold_boot`/`hot_pool`/`snapshot_restore`/`fork`), reported separately and never merged. |
+| `POST` | `/v1/benchmarks/run` | Admin: run a fresh harness sweep `{image?, iterations?}` and return the recomputed table. |
 | `GET` | `/healthz` | Liveness (no auth). |
+
+The benchmark harness (roadmap Phase 0) drives the runtime directly with
+throwaway VMs — not billable sandboxes — so the baseline measures the boot
+machinery honestly. `snapshot_restore` is the perpetual-standby resume path and
+carries the Phase 2 targets (`p50 < 25ms`, `p90 < 50ms`), surfaced under
+`targets` in the response.
 
 ## Preview proxy (spec §16.2)
 

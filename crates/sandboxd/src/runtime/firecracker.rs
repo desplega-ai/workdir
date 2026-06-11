@@ -27,6 +27,7 @@ use crate::ids;
 use crate::model::BootPath;
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -63,16 +64,26 @@ fn jail_guest_path(path: &str) -> Result<String> {
     Ok(format!("{GUEST_WORKSPACE}/{}", out.join("/")))
 }
 
+#[derive(Serialize, Deserialize)]
 struct VmRecord {
     /// Firecracker API control socket.
     api_sock: PathBuf,
     /// Host-side Unix socket that fronts the guest's vsock.
     vsock_uds: PathBuf,
-    /// Jailer/Firecracker process id, for teardown.
+    /// vsock uds path as Firecracker itself sees it (chroot-relative under the
+    /// jailer); re-supplied to `/vsock` when restoring a standby snapshot.
+    vsock_fc: String,
+    /// Guest CID of the vsock device, re-supplied on restore.
+    cid: u32,
+    /// Jailer/Firecracker process id, for teardown. `None` once evicted to
+    /// standby (the process is killed to free guest RAM).
     pid: Option<u32>,
     image_key: String,
     /// Host tap device for this VM's NIC, removed on teardown.
     tap: Option<String>,
+    /// Tap allocation index; recreates the same MAC/IP on restore so the
+    /// restored NIC matches the one captured in the snapshot.
+    tap_idx: Option<u32>,
     /// Guest IP (on the bridge) the preview proxy dials for HTTP/VNC/CDP.
     guest_ip: Option<String>,
     /// Env applied to every exec: startup env + injected secrets. Kept in host
@@ -81,6 +92,9 @@ struct VmRecord {
     resident_env: std::collections::BTreeMap<String, String>,
     /// True while secret values are resident; snapshots are refused.
     has_secrets: bool,
+    /// Parked in perpetual standby: snapshot on disk, RAM freed, tap torn down
+    /// (roadmap Phase 1). `restore` brings it back.
+    standby: bool,
 }
 
 // --- sandbox networking (bridge + NAT) -------------------------------------
@@ -111,6 +125,47 @@ async fn run_ip(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Create a host tap, attach it to the sandbox bridge as an isolated port (no
+/// cross-tenant L2), and bring it up. Used on cold boot and recreated on restore
+/// — the standby→resume path, where eviction tore the tap down and a resumed VM
+/// would otherwise have no network (roadmap Phase 1).
+async fn setup_tap(tap: &str) -> Result<()> {
+    let _ = run_ip(&["link", "del", tap]).await; // clear any stale device
+    run_ip(&["tuntap", "add", tap, "mode", "tap"]).await.context("create tap")?;
+    run_ip(&["link", "set", tap, "master", NET_BRIDGE]).await.context("attach tap to bridge")?;
+    run_ip(&["link", "set", tap, "type", "bridge_slave", "isolated", "on"]).await.context("isolate tap")?;
+    run_ip(&["link", "set", tap, "up"]).await.context("bring tap up")?;
+    Ok(())
+}
+
+/// Whether a host network device currently exists.
+fn tap_exists(tap: &str) -> bool {
+    std::path::Path::new(&format!("/sys/class/net/{tap}")).exists()
+}
+
+/// Pull a snapshot's memory file into the host page cache before a restore so
+/// the guest's first accesses hit warm pages instead of stalling on disk reads
+/// (roadmap Phase 2, lever #2 "keep the mem.file hot in page cache"). Best
+/// effort: a failure here only costs latency, never correctness.
+async fn prewarm_page_cache(path: &std::path::Path) {
+    let path = path.to_path_buf();
+    // Sequentially fault the file in on a blocking thread so the async runtime
+    // is not stalled by the read. On Linux this populates the page cache that
+    // the subsequent `File`/`Uffd` backend serves pages from.
+    let _ = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        if let Ok(mut f) = std::fs::File::open(&path) {
+            let mut buf = vec![0u8; 1 << 20]; // 1 MiB
+            while let Ok(n) = f.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+            }
+        }
+    })
+    .await;
+}
+
 pub struct FirecrackerRuntime {
     firecracker_bin: String,
     jailer_bin: String,
@@ -120,6 +175,15 @@ pub struct FirecrackerRuntime {
     chroot_base: PathBuf,
     use_jailer: bool,
     jailer_uid_base: u32,
+    /// Snapshot memory backend used on restore ("file" or "uffd"); Phase 2.
+    restore_mem_backend: String,
+    /// Warm the mem file into page cache before restore (Phase 2).
+    prewarm_mem_cache: bool,
+    /// Firecracker CPU template for snapshot portability (Phase 2, lever #4).
+    cpu_template: String,
+    /// Share one read-only base rootfs across VMs instead of a per-VM COW copy
+    /// (Phase 3 density); the guest layers a tmpfs+overlayfs on top.
+    shared_rootfs: bool,
     next_cid: AtomicU32,
     next_tap: AtomicU32,
     vms: Mutex<HashMap<String, VmRecord>>,
@@ -136,6 +200,10 @@ impl FirecrackerRuntime {
             chroot_base: cfg.workspace_dir.join("jail"),
             use_jailer: cfg.use_jailer,
             jailer_uid_base: cfg.jailer_uid_base,
+            restore_mem_backend: cfg.restore_mem_backend.clone(),
+            prewarm_mem_cache: cfg.prewarm_mem_cache,
+            cpu_template: cfg.cpu_template.clone(),
+            shared_rootfs: cfg.shared_rootfs,
             next_cid: AtomicU32::new(3), // CIDs 0-2 are reserved
             next_tap: AtomicU32::new(0),
             vms: Mutex::new(HashMap::new()),
@@ -278,15 +346,9 @@ impl FirecrackerRuntime {
         let guest_ip = guest_ip(tap_idx);
         let guest_mac = guest_mac(tap_idx);
         if snapshot.is_none() {
-            let _ = run_ip(&["link", "del", &tap]).await; // clear any stale device
-            run_ip(&["tuntap", "add", &tap, "mode", "tap"]).await.context("create tap")?;
-            run_ip(&["link", "set", &tap, "master", NET_BRIDGE]).await.context("attach tap to bridge")?;
             // Isolated bridge port: the guest can reach the gateway/uplink (NAT
             // egress) but NOT other sandboxes' taps — cross-tenant L2 isolation.
-            run_ip(&["link", "set", &tap, "type", "bridge_slave", "isolated", "on"])
-                .await
-                .context("isolate tap")?;
-            run_ip(&["link", "set", &tap, "up"]).await.context("bring tap up")?;
+            setup_tap(&tap).await?;
         }
 
         // Launch Firecracker — directly, or wrapped by the jailer (chroot +
@@ -340,9 +402,19 @@ impl FirecrackerRuntime {
             // Direct launch (default). The microVM is the isolation boundary.
             let api_sock = jail.join("api.sock");
             let vsock_uds = jail.join("vsock.sock");
-            let overlay = jail.join("overlay.ext4");
-            tokio::process::Command::new("cp").args(["--reflink=auto"]).arg(&rootfs).arg(&overlay).status().await
-                .context("create COW overlay (is the rootfs present?)")?;
+            // Phase 3 density: with `shared_rootfs`, every VM mounts the SAME
+            // read-only base rootfs (one copy in the host page cache, shared
+            // across all sandboxes; DAX-mappable) and the guest layers a
+            // tmpfs+overlayfs for writes — no per-VM rootfs copy at all.
+            // Otherwise, give the VM its own reflinked COW overlay.
+            let root_disk = if self.shared_rootfs {
+                rootfs.to_string_lossy().into_owned()
+            } else {
+                let overlay = jail.join("overlay.ext4");
+                tokio::process::Command::new("cp").args(["--reflink=auto"]).arg(&rootfs).arg(&overlay).status().await
+                    .context("create COW overlay (is the rootfs present?)")?;
+                overlay.to_string_lossy().into_owned()
+            };
             let _ = std::fs::remove_file(&api_sock);
             let log = std::fs::File::create(jail.join("firecracker.log")).context("fc log")?;
             let log2 = log.try_clone().context("fc log clone")?;
@@ -356,7 +428,7 @@ impl FirecrackerRuntime {
                 api_sock,
                 vsock_uds.clone(),
                 self.kernel_image.clone(),
-                overlay.to_string_lossy().into_owned(),
+                root_disk,
                 vsock_uds.to_string_lossy().into_owned(),
                 child.id(),
             )
@@ -367,14 +439,19 @@ impl FirecrackerRuntime {
             VmRecord {
                 api_sock: api_sock.clone(),
                 vsock_uds: vsock_uds.clone(),
+                vsock_fc: vsock_fc.clone(),
+                cid,
                 pid,
                 image_key: spec.image_key.clone(),
                 tap: if snapshot.is_none() { Some(tap.clone()) } else { None },
+                tap_idx: if snapshot.is_none() { Some(tap_idx) } else { None },
                 guest_ip: if snapshot.is_none() { Some(guest_ip.clone()) } else { None },
                 resident_env: Default::default(),
                 has_secrets: false,
+                standby: false,
             },
         );
+        self.persist_record(&handle);
 
         // Everything after the jailer spawn is fallible (config errors, a 10 s
         // agent timeout). If any step fails we MUST kill the VM and reclaim its
@@ -407,16 +484,29 @@ impl FirecrackerRuntime {
                     "resume_vm": true,
                 })).await?;
             } else {
-                self.fc_api(&api_sock, "PUT", "/machine-config", &json!({
+                let mut machine_cfg = json!({
                     "vcpu_count": vcpus,
                     "mem_size_mib": mem_mib,
                     "smt": false,
-                })).await?;
+                });
+                // CPU template masks host CPUID to a portable baseline so a
+                // snapshot restores across heterogeneous hosts (Phase 2 lever #4).
+                if !self.cpu_template.is_empty() {
+                    machine_cfg["cpu_template"] = json!(self.cpu_template);
+                }
+                self.fc_api(&api_sock, "PUT", "/machine-config", &machine_cfg).await?;
                 // Network params are passed on the kernel cmdline; the guest init
-                // configures eth0 from them (no in-guest DHCP needed).
+                // configures eth0 from them (no in-guest DHCP needed). With a
+                // shared read-only base, mount it `ro` and signal the guest init
+                // to layer a tmpfs+overlayfs so writes land in RAM (Phase 3).
+                let (root_mode, overlay_arg) = if self.shared_rootfs {
+                    ("ro", " wd.overlay=tmpfs")
+                } else {
+                    ("rw", "")
+                };
                 let boot_args = format!(
-                    "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw \
-                     wd.ip={guest_ip} wd.gw={NET_GATEWAY} wd.dns={NET_DNS} init=/sbin/sandbox-init"
+                    "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda {root_mode} \
+                     wd.ip={guest_ip} wd.gw={NET_GATEWAY} wd.dns={NET_DNS}{overlay_arg} init=/sbin/sandbox-init"
                 );
                 self.fc_api(&api_sock, "PUT", "/boot-source", &json!({
                     "kernel_image_path": kernel_fc,
@@ -426,7 +516,7 @@ impl FirecrackerRuntime {
                     "drive_id": "rootfs",
                     "path_on_host": rootfs_fc,
                     "is_root_device": true,
-                    "is_read_only": false,
+                    "is_read_only": self.shared_rootfs,
                 })).await?;
                 self.fc_api(&api_sock, "PUT", "/network-interfaces/eth0", &json!({
                     "iface_id": "eth0",
@@ -576,6 +666,56 @@ impl FirecrackerRuntime {
     /// The jailer's chroot directory for a VM handle.
     fn jailer_chroot(&self, handle: &str) -> PathBuf {
         self.chroot_base.join("firecracker").join(handle.replace('_', "-"))
+    }
+
+    /// Per-VM jail directory (holds api.sock, the snapshot artifacts, and the
+    /// persisted record).
+    fn jail_dir(&self, handle: &str) -> PathBuf {
+        self.chroot_base.join(handle)
+    }
+
+    /// Persist the in-memory record for `handle` to its jail dir, so a standby
+    /// VM can be restored after a control-plane restart drops the in-memory map
+    /// (roadmap Phase 1). Best effort.
+    fn persist_record(&self, handle: &str) {
+        let json = {
+            let vms = self.vms.lock().unwrap();
+            vms.get(handle).and_then(|r| serde_json::to_string(r).ok())
+        };
+        if let Some(json) = json {
+            let _ = std::fs::write(self.jail_dir(handle).join("record.json"), json);
+        }
+    }
+
+    /// Rehydrate `handle`'s record from disk if it is not resident (e.g. after a
+    /// restart). No-op if already loaded or never persisted.
+    fn ensure_record_loaded(&self, handle: &str) {
+        {
+            let vms = self.vms.lock().unwrap();
+            if vms.contains_key(handle) {
+                return;
+            }
+        }
+        if let Ok(data) = std::fs::read_to_string(self.jail_dir(handle).join("record.json")) {
+            if let Ok(rec) = serde_json::from_str::<VmRecord>(&data) {
+                self.vms.lock().unwrap().insert(handle.to_string(), rec);
+            }
+        }
+    }
+
+    /// Pause a VM and write a Full snapshot (memory + device state) into `jail`,
+    /// returning the (snapshot_file, mem_file) paths. Shared by `snapshot`,
+    /// `standby`, and `fork`.
+    async fn write_snapshot(&self, sock: &PathBuf, jail: &std::path::Path) -> Result<(PathBuf, PathBuf)> {
+        self.fc_api(sock, "PATCH", "/vm", &json!({"state": "Paused"})).await?;
+        let snap_file = jail.join("snapshot.file");
+        let mem_file = jail.join("mem.file");
+        self.fc_api(sock, "PUT", "/snapshot/create", &json!({
+            "snapshot_type": "Full",
+            "snapshot_path": snap_file.to_str().unwrap(),
+            "mem_file_path": mem_file.to_str().unwrap(),
+        })).await?;
+        Ok((snap_file, mem_file))
     }
 }
 
@@ -736,24 +876,285 @@ impl Runtime for FirecrackerRuntime {
         Ok(start.elapsed().as_millis() as u64)
     }
 
+    async fn standby(&self, handle: &str) -> Result<u64> {
+        // Perpetual standby (roadmap Phase 1): snapshot the VM to disk, then kill
+        // the Firecracker process so its guest RAM returns to the host, and tear
+        // down the tap. The record is kept (snapshot artifacts + NIC identity) so
+        // `restore` can bring the exact same VM back.
+        let (sock, jail, pid, tap, has_secrets) = {
+            let vms = self.vms.lock().unwrap();
+            let v = vms.get(handle).ok_or_else(|| anyhow!("unknown vm {handle}"))?;
+            (
+                v.api_sock.clone(),
+                v.api_sock.parent().unwrap().to_path_buf(),
+                v.pid,
+                v.tap.clone(),
+                v.has_secrets,
+            )
+        };
+        // Refuse to persist resident secrets into a snapshot (review M3).
+        if has_secrets {
+            bail!("cannot standby a sandbox with resident secrets; remove secrets first");
+        }
+        let start = Instant::now();
+        // Pause + write the Full snapshot to the jail (shared helper).
+        self.write_snapshot(&sock, &jail).await?;
+        // Free the guest RAM: SIGKILL Firecracker. The mem.file on disk now holds
+        // the guest memory image.
+        if let Some(pid) = pid {
+            let _ = tokio::process::Command::new("kill").arg("-9").arg(pid.to_string()).status().await;
+        }
+        // Reclaim the tap too; `restore` recreates it (the bug the roadmap calls
+        // out: a resumed VM must get its host networking back).
+        if let Some(tap) = &tap {
+            let _ = run_ip(&["link", "del", tap]).await;
+        }
+        if let Some(v) = self.vms.lock().unwrap().get_mut(handle) {
+            v.pid = None;
+            v.standby = true;
+        }
+        // Persist the now-standby record so a restart can still restore it.
+        self.persist_record(handle);
+        Ok(start.elapsed().as_millis() as u64)
+    }
+
+    async fn restore(&self, handle: &str) -> Result<u64> {
+        // Bring a standby VM back from its on-disk snapshot. Recreate the host
+        // tap (the eviction tore it down), relaunch Firecracker, load the
+        // snapshot, and wait for the guest agent. After a control-plane restart
+        // the in-memory record is gone, so rehydrate it from disk first.
+        self.ensure_record_loaded(handle);
+        let (api_sock, jail, vsock_fc, cid, tap, tap_idx) = {
+            let vms = self.vms.lock().unwrap();
+            let v = vms.get(handle).ok_or_else(|| anyhow!("unknown vm {handle} (no persisted record)"))?;
+            (
+                v.api_sock.clone(),
+                v.api_sock.parent().unwrap().to_path_buf(),
+                v.vsock_fc.clone(),
+                v.cid,
+                v.tap.clone(),
+                v.tap_idx,
+            )
+        };
+        let start = Instant::now();
+
+        // Recreate the tap (same name → same MAC/IP, so it matches the NIC saved
+        // in the snapshot) if eviction removed it. THIS is the tap-recreation the
+        // roadmap calls for; without it a resumed VM has no network.
+        if let Some(tap) = &tap {
+            if !tap_exists(tap) {
+                setup_tap(tap).await.context("recreate tap on restore")?;
+            }
+        }
+
+        // Relaunch Firecracker against the same control socket.
+        //
+        // NOTE: this relaunch is a direct Firecracker process. Re-entering the
+        // jailer chroot on restore is a follow-up; the microVM is still the
+        // isolation boundary, so this is a defense-in-depth reduction (logged),
+        // not a VM-escape. Tracked for the jailer-restore increment.
+        if self.use_jailer {
+            tracing::warn!(handle, "restore relaunches Firecracker unjailed (jailer-restore pending)");
+        }
+        let _ = std::fs::remove_file(&api_sock);
+        let log = std::fs::File::create(jail.join("restore.log")).context("restore log")?;
+        let log2 = log.try_clone().context("restore log clone")?;
+        let child = tokio::process::Command::new(&self.firecracker_bin)
+            .args(["--api-sock", api_sock.to_str().unwrap()])
+            .stdout(log)
+            .stderr(log2)
+            .spawn()
+            .context("relaunch firecracker for restore (requires /dev/kvm)")?;
+        let pid = child.id();
+        for _ in 0..400 {
+            if api_sock.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Re-establish the vsock backend (host UDS is not part of the snapshot),
+        // mirroring the boot() snapshot path.
+        self.fc_api(&api_sock, "PUT", "/vsock", &json!({
+            "guest_cid": cid,
+            "uds_path": vsock_fc,
+        })).await?;
+
+        let snap_file = jail.join("snapshot.file");
+        let mem_file = jail.join("mem.file");
+        // Phase 2 lever #2: warm the mem file into page cache before load.
+        if self.prewarm_mem_cache {
+            prewarm_page_cache(&mem_file).await;
+        }
+        // Phase 2 lever #1: UFFD demand-paging returns the guest before its full
+        // working set is resident. Selecting "uffd" requires a userfaultfd page
+        // handler listening on the backend socket to serve faults from mem.file;
+        // that handler is the remaining KVM-host increment. Until it lands we
+        // fall back to the eager "File" backend (which `prewarm_page_cache` above
+        // already makes warm) rather than configure a backend with no handler,
+        // which would hang the restore.
+        let backend_type = if self.restore_mem_backend.eq_ignore_ascii_case("uffd") {
+            tracing::warn!("restore_mem_backend=uffd selected but the userfaultfd handler is not yet implemented; using File (page-cache prewarmed)");
+            "File"
+        } else {
+            "File"
+        };
+        self.fc_api(&api_sock, "PUT", "/snapshot/load", &json!({
+            "snapshot_path": snap_file.to_str().unwrap(),
+            "mem_backend": { "backend_path": mem_file.to_str().unwrap(), "backend_type": backend_type },
+            "resume_vm": true,
+        })).await?;
+
+        // Update the record before the agent wait so a failure still leaves a
+        // killable pid.
+        if let Some(v) = self.vms.lock().unwrap().get_mut(handle) {
+            v.pid = pid;
+            v.standby = false;
+            if let Some(idx) = tap_idx {
+                v.guest_ip = Some(guest_ip(idx));
+            }
+        }
+        self.persist_record(handle);
+        // The guest agent should answer almost immediately on a warm restore.
+        self.await_agent(handle, Duration::from_secs(10)).await?;
+        Ok(start.elapsed().as_millis() as u64)
+    }
+
     async fn snapshot(&self, handle: &str) -> Result<SnapshotArtifact> {
         let (sock, jail) = {
             let vms = self.vms.lock().unwrap();
             let v = vms.get(handle).ok_or_else(|| anyhow!("unknown vm {handle}"))?;
             (v.api_sock.clone(), v.api_sock.parent().unwrap().to_path_buf())
         };
-        // Pause is required before snapshot creation.
-        self.fc_api(&sock, "PATCH", "/vm", &json!({"state": "Paused"})).await?;
-        let snap_file = jail.join("snapshot.file");
-        let mem_file = jail.join("mem.file");
-        self.fc_api(&sock, "PUT", "/snapshot/create", &json!({
-            "snapshot_type": "Full",
-            "snapshot_path": snap_file.to_str().unwrap(),
-            "mem_file_path": mem_file.to_str().unwrap(),
-        })).await?;
+        let (snap_file, mem_file) = self.write_snapshot(&sock, &jail).await?;
         let bytes = std::fs::metadata(&mem_file).map(|m| m.len()).unwrap_or(0)
             + std::fs::metadata(&snap_file).map(|m| m.len()).unwrap_or(0);
         Ok(SnapshotArtifact { handle: ids::snapshot_id(), storage_bytes: bytes })
+    }
+
+    async fn fork(&self, parent_handle: &str, child_spec: &VmSpec) -> Result<VmInstance> {
+        // Clone a sibling from the parent's live snapshot (roadmap Phase 3). The
+        // parent keeps running; the child gets its own disk copy, host tap, CID,
+        // and (re-IP'd) guest networking.
+        let (parent_sock, parent_jail, parent_image, has_secrets) = {
+            let vms = self.vms.lock().unwrap();
+            let v = vms.get(parent_handle).ok_or_else(|| anyhow!("unknown parent vm {parent_handle}"))?;
+            (
+                v.api_sock.clone(),
+                v.api_sock.parent().unwrap().to_path_buf(),
+                v.image_key.clone(),
+                v.has_secrets,
+            )
+        };
+        if has_secrets {
+            bail!("cannot fork a sandbox with resident secrets; they would be copied into the child");
+        }
+        let start = Instant::now();
+
+        // Snapshot the parent, then resume it so the fork is non-disruptive.
+        let (parent_snap, parent_mem) = self.write_snapshot(&parent_sock, &parent_jail).await?;
+        self.fc_api(&parent_sock, "PATCH", "/vm", &json!({"state": "Resumed"})).await?;
+
+        // Stage the child VM.
+        let child = format!("vm_{}", child_spec.sandbox_id);
+        let child_jail = self.chroot_base.join(&child);
+        std::fs::create_dir_all(&child_jail).context("create child jail")?;
+        self.workspaces.create(&child)?;
+        let tap_idx = self.next_tap.fetch_add(1, Ordering::SeqCst);
+        let tap = format!("wdtap{tap_idx}");
+        let child_ip = guest_ip(tap_idx);
+        let cid = self.next_cid.fetch_add(1, Ordering::SeqCst);
+        setup_tap(&tap).await.context("fork: child tap")?;
+
+        // Copy the snapshot artifacts and the writable overlay into the child.
+        let child_snap = child_jail.join("snapshot.file");
+        let child_mem = child_jail.join("mem.file");
+        let child_vsock = child_jail.join("vsock.sock");
+        let cp = |from: &std::path::Path, to: &std::path::Path| -> Result<()> {
+            std::fs::copy(from, to).map(|_| ()).with_context(|| format!("fork copy {from:?} -> {to:?}"))
+        };
+        cp(&parent_snap, &child_snap)?;
+        cp(&parent_mem, &child_mem)?;
+        // The parent's writable disk overlay becomes the child's starting disk.
+        let parent_overlay = parent_jail.join("overlay.ext4");
+        if parent_overlay.exists() {
+            let _ = tokio::process::Command::new("cp")
+                .args(["--reflink=auto"]).arg(&parent_overlay).arg(child_jail.join("overlay.ext4"))
+                .status().await;
+        }
+
+        // Launch the child Firecracker and load the snapshot *paused*, so we can
+        // repoint its NIC at the child's tap before it resumes.
+        let child_sock = child_jail.join("api.sock");
+        let _ = std::fs::remove_file(&child_sock);
+        let log = std::fs::File::create(child_jail.join("firecracker.log")).context("child fc log")?;
+        let log2 = log.try_clone()?;
+        let pid = tokio::process::Command::new(&self.firecracker_bin)
+            .args(["--api-sock", child_sock.to_str().unwrap()])
+            .stdout(log).stderr(log2)
+            .spawn().context("spawn child firecracker")?
+            .id();
+        for _ in 0..400 {
+            if child_sock.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        self.fc_api(&child_sock, "PUT", "/vsock", &json!({
+            "guest_cid": cid, "uds_path": "vsock.sock",
+        })).await?;
+        if self.prewarm_mem_cache {
+            prewarm_page_cache(&child_mem).await;
+        }
+        self.fc_api(&child_sock, "PUT", "/snapshot/load", &json!({
+            "snapshot_path": child_snap.to_str().unwrap(),
+            "mem_backend": { "backend_path": child_mem.to_str().unwrap(), "backend_type": "File" },
+            "resume_vm": false,
+        })).await?;
+        // Repoint the restored NIC at the child's own tap, then resume.
+        self.fc_api(&child_sock, "PATCH", "/network-interfaces/eth0", &json!({
+            "iface_id": "eth0", "host_dev_name": tap,
+        })).await?;
+        self.fc_api(&child_sock, "PATCH", "/vm", &json!({"state": "Resumed"})).await?;
+
+        self.vms.lock().unwrap().insert(
+            child.clone(),
+            VmRecord {
+                api_sock: child_sock,
+                vsock_uds: child_vsock.clone(),
+                vsock_fc: "vsock.sock".to_string(),
+                cid,
+                pid,
+                image_key: parent_image,
+                tap: Some(tap),
+                tap_idx: Some(tap_idx),
+                guest_ip: Some(child_ip.clone()),
+                resident_env: Default::default(),
+                has_secrets: false,
+                standby: false,
+            },
+        );
+        self.persist_record(&child);
+        self.await_agent(&child, Duration::from_secs(10)).await?;
+        // Re-IP the guest: the snapshot carried the parent's address, which would
+        // collide on the bridge. (MAC is inherited; the isolated tap keeps that
+        // from mattering. A distinct MAC on fork is a follow-up.)
+        let _ = self.agent_call(&child, &json!({
+            "op": "exec",
+            "cmd": format!("ip addr flush dev eth0 2>/dev/null; ip addr add {child_ip}/16 dev eth0 2>/dev/null; ip link set eth0 up 2>/dev/null; true"),
+            "background": false,
+        })).await;
+        // Apply the child's own env/files/agent/mounts on top of the inherited state.
+        let agent_ms = self.apply_features(&child, child_spec).await?;
+
+        Ok(VmInstance {
+            handle: child,
+            boot_path: BootPath::Fork,
+            boot_ms: start.elapsed().as_millis() as u64,
+            image_cache_ms: 0,
+            browser_ready_ms: 0,
+            agent_ms,
+        })
     }
 
     async fn delete(&self, handle: &str) -> Result<()> {

@@ -54,9 +54,43 @@ A create resolves to exactly one boot path, and the API **reports which one**:
 1. `hot_pool` — claim a pre-booted warm microVM matching the image+shape. Fastest.
 2. `snapshot_restore` — restore a memory+disk snapshot for the shape. Medium.
 3. `cold_boot` — boot the image rootfs fresh. Slowest; pays image cache cost.
+4. `fork` — clone a sibling from a parent's live snapshot artifact (roadmap
+   Phase 3, `POST /v1/sandboxes/:id/fork`). Tracks resume latency, not cold boot.
 
 Hot-pool numbers are never published as the headline without their label
 (`GET /v1/benchmarks` keeps the paths separate, spec §21.3).
+
+### Benchmark harness (roadmap Phase 0)
+
+`src/bench.rs` actively measures each boot path on the local node by driving the
+runtime with throwaway VMs (no billable sandbox records), persists samples to the
+`benchmarks` table, and serves a p50/p90/p95 table at `GET /v1/benchmarks`.
+`POST /v1/benchmarks/run` sweeps **every curated image** at its own shape by
+default (`{"image":"all"}`) or a single named one. The `snapshot_restore` series
+is the perpetual-standby resume path and carries the Phase 2 targets, so every
+later phase is judged against a measured, path-separated baseline.
+
+### Perpetual standby (roadmap Phase 1)
+
+The lifecycle adds a `standby` state. The idle reaper no longer merely *stops* an
+idle sandbox — it **snapshots it, frees its RAM, parks it in `standby` at $0**,
+and the next request **transparently auto-resumes** it (`service::ensure_running`
+in the request path). This is what reframes workdir from a sandbox API into a
+perpetual-sandbox platform: an idle sandbox stays logically alive but stops
+costing anything. The Firecracker runtime implements `standby` (snapshot + kill
+to reclaim guest RAM, tear down the tap) and `restore` (recreate the tap — the
+networking a naive restore would drop — relaunch, load the snapshot with the
+mem file page-cache-prewarmed). `stopped` remains the explicit, user-initiated
+pause that requires an explicit resume.
+
+Standby **survives a control-plane restart**: each runtime persists its per-VM
+record to disk (mock: `vm.json` beside the workspace; Firecracker: `record.json`
+in the jail dir) on boot/standby/restore/fork, and lazily rehydrates it when a
+handle isn't resident. After sandboxd restarts, `reconcile_interrupted` fails the
+*active* sandboxes (their VMs are gone) but leaves `standby`/`stopped` rows alone;
+the first request to a standby sandbox then drives `restore`, which reloads the
+record from disk and brings the VM back. Without this, "perpetual" would only
+hold until the next daemon restart.
 
 ## Create flow (spec §13.2)
 
@@ -132,8 +166,10 @@ join, drain, scheduling decisions, capacity math) already spans the cluster.
 
 - **Warmer**: reconciles hot pools toward targets (base 2, node-python 1,
   browser 1 by default).
-- **Idle reaper**: auto-stops sandboxes idle past their `auto_stop_seconds`
-  window; exec and preview activity bump `last_active_at`.
+- **Idle reaper**: parks sandboxes idle past their `auto_stop_seconds` window in
+  perpetual standby (snapshot + free RAM + $0, auto-resume on next request);
+  secret-resident sandboxes fall back to a plain stop. Exec and preview activity
+  bump `last_active_at`.
 - **Heartbeat**: keeps the local node's registry entry fresh.
 
 ## Guest agent (`crates/guest-agent`)

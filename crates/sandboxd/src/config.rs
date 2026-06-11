@@ -14,6 +14,7 @@ pub struct Config {
     pub pricing: PricingConfig,
     pub hotpool: HotPoolConfig,
     pub auth: AuthConfig,
+    pub standby: StandbyConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +76,36 @@ pub struct RuntimeConfig {
     pub images_dir: PathBuf,
     /// Per-sandbox writable workspace / COW disk root.
     pub workspace_dir: PathBuf,
+    /// Snapshot memory backend used on restore (roadmap Phase 2).
+    /// `"file"` (default) maps the mem file directly; `"uffd"` serves pages
+    /// lazily over a userfaultfd handler so resume returns before the working
+    /// set is paged in. `uffd` requires a Linux host with userfaultfd enabled.
+    #[serde(default = "default_restore_mem_backend")]
+    pub restore_mem_backend: String,
+    /// Pull the snapshot's mem file into the page cache just before a restore so
+    /// the guest faults against warm pages (Phase 2, lever #2). Cheap; on by
+    /// default.
+    #[serde(default = "default_true_bool")]
+    pub prewarm_mem_cache: bool,
+    /// Share one read-only base rootfs across sandboxes (EROFS + tmpfs +
+    /// overlayfs) instead of giving each VM a full private COW copy (roadmap
+    /// Phase 3 density). Requires base images built as EROFS; see deploy/images.
+    #[serde(default)]
+    pub shared_rootfs: bool,
+    /// Firecracker CPU template (e.g. "T2", "C3", "T2CL") that masks host CPUID
+    /// to a portable baseline so a snapshot taken on one host class restores on
+    /// another (roadmap Phase 2, lever #4). Empty = no template (host CPUID
+    /// passthrough; snapshots are then only portable within identical hardware).
+    #[serde(default)]
+    pub cpu_template: String,
+}
+
+fn default_restore_mem_backend() -> String {
+    "file".to_string()
+}
+
+fn default_true_bool() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +116,17 @@ pub struct HotPoolConfig {
     pub warm_interval_seconds: u64,
     /// Override base hot-pool target (spec default 2).
     pub base_target: u32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct StandbyConfig {
+    /// When true, the idle reaper parks idle sandboxes in perpetual standby
+    /// (snapshot → free RAM → $0 → auto-resume on next request; roadmap Phase 1).
+    /// When false (default), it stops them — the pre-Phase-1 behavior. Off by
+    /// default so the snapshot/restore path can be validated on a given node
+    /// (e.g. via `POST /v1/benchmarks/run`) before real sandboxes depend on it.
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,6 +180,10 @@ impl Default for RuntimeConfig {
             kernel_image: String::new(),
             images_dir: PathBuf::new(),
             workspace_dir: PathBuf::new(),
+            restore_mem_backend: default_restore_mem_backend(),
+            prewarm_mem_cache: true,
+            shared_rootfs: false,
+            cpu_template: String::new(),
         }
     }
 }
@@ -194,6 +240,9 @@ impl Config {
         if let Ok(v) = std::env::var("WORKDIR_RPC_TOKEN") {
             cfg.node.rpc_token = v;
         }
+        if let Ok(v) = std::env::var("WORKDIR_STANDBY") {
+            cfg.standby.enabled = matches!(v.as_str(), "1" | "true" | "yes");
+        }
         // Derive runtime storage paths from data_dir when not explicitly set, so
         // a single `data_dir` is enough to run anywhere (dev or production).
         let data = cfg.server.data_dir.clone();
@@ -211,5 +260,30 @@ impl Config {
 
     pub fn db_path(&self) -> PathBuf {
         self.server.data_dir.join("workdir.db")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_config_deserializes() {
+        // The config `gen-config` prints must always parse back through the real
+        // loader, so a new field can't drift the two out of sync.
+        let cfg: Config = toml::from_str(crate::config_example::EXAMPLE_CONFIG)
+            .expect("example config must deserialize");
+        assert_eq!(cfg.runtime.restore_mem_backend, "file");
+        assert!(cfg.runtime.prewarm_mem_cache);
+        assert!(!cfg.runtime.shared_rootfs);
+    }
+
+    #[test]
+    fn runtime_defaults_are_safe() {
+        let r = RuntimeConfig::default();
+        assert_eq!(r.restore_mem_backend, "file");
+        assert!(r.prewarm_mem_cache);
+        assert!(!r.shared_rootfs);
+        assert!(r.cpu_template.is_empty());
     }
 }

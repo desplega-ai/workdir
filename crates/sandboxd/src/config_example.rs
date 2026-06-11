@@ -24,6 +24,12 @@ jailer_bin = "/usr/local/bin/jailer"
 kernel_image = "/var/lib/workdir/kernel/vmlinux"
 images_dir = "/var/lib/workdir/images"
 workspace_dir = "/var/lib/workdir/workspaces"
+# Resume-latency tuning (roadmap Phase 2):
+restore_mem_backend = "file"  # "file" (eager, page-cache-prewarmed) or "uffd" (lazy demand paging; handler is the remaining KVM-host increment)
+prewarm_mem_cache = true       # warm the snapshot mem file into page cache just before a restore
+cpu_template = ""              # e.g. "T2"/"C3" for snapshot portability across heterogeneous hosts
+# Density (roadmap Phase 3):
+shared_rootfs = false          # share one read-only base rootfs across VMs (EROFS + tmpfs + overlayfs); needs EROFS base images
 
 [pricing]
 default_unit_price_usd_hr = 0.009
@@ -41,6 +47,12 @@ custom = 1.2
 enabled = true
 warm_interval_seconds = 5
 base_target = 2
+
+[standby]
+# When true, idle sandboxes are parked in perpetual standby (snapshot + free RAM
+# + $0, auto-resume on next request) instead of stopped. Off by default; validate
+# the snapshot/restore path on the node (POST /v1/benchmarks/run) before enabling.
+enabled = false
 
 [auth]
 bootstrap_admin_key = ""    # set for reproducible installs; else generated once

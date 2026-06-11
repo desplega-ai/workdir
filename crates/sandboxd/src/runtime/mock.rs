@@ -19,6 +19,7 @@ use crate::ids;
 use crate::model::BootPath;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::process::Stdio;
@@ -26,9 +27,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tokio::process::Command;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct VmState {
     paused: bool,
+    /// Parked in perpetual standby: snapshot taken, "RAM" freed (Phase 1).
+    standby: bool,
     /// Env that persists across exec calls: startup env + injected secrets.
     resident_env: std::collections::BTreeMap<String, String>,
 }
@@ -45,6 +48,41 @@ impl MockRuntime {
 
     fn dir(&self, handle: &str) -> std::path::PathBuf {
         self.workspaces.dir_for(handle).join("workspace")
+    }
+
+    /// Where this VM's runtime state is persisted (a sibling of the workspace,
+    /// so it is outside the user-visible file API). Persisting it lets a standby
+    /// sandbox survive a control-plane restart: a fresh runtime rehydrates the
+    /// record from disk and can still `restore` it (roadmap Phase 1).
+    fn state_path(&self, handle: &str) -> std::path::PathBuf {
+        self.workspaces.dir_for(handle).join("vm.json")
+    }
+
+    /// Write the in-memory state for `handle` to disk.
+    fn persist(&self, handle: &str) {
+        let json = {
+            let state = self.state.lock().unwrap();
+            state.get(handle).and_then(|s| serde_json::to_string(s).ok())
+        };
+        if let Some(json) = json {
+            let _ = std::fs::write(self.state_path(handle), json);
+        }
+    }
+
+    /// If `handle` is not resident in memory (e.g. after a restart), rehydrate it
+    /// from its on-disk `vm.json`. No-op if already loaded or never persisted.
+    fn ensure_loaded(&self, handle: &str) {
+        {
+            let state = self.state.lock().unwrap();
+            if state.contains_key(handle) {
+                return;
+            }
+        }
+        if let Ok(data) = std::fs::read_to_string(self.state_path(handle)) {
+            if let Ok(st) = serde_json::from_str::<VmState>(&data) {
+                self.state.lock().unwrap().insert(handle.to_string(), st);
+            }
+        }
     }
 
     /// Deterministic small jitter (0..span ms) derived from the handle so the
@@ -125,12 +163,14 @@ impl Runtime for MockRuntime {
         self.state
             .lock()
             .unwrap()
-            .insert(handle.clone(), VmState { paused: false, resident_env });
+            .insert(handle.clone(), VmState { paused: false, standby: false, resident_env });
+        self.persist(&handle);
 
         Ok(VmInstance { handle, boot_path, boot_ms, image_cache_ms, browser_ready_ms, agent_ms: 0 })
     }
 
     async fn exec(&self, handle: &str, req: &ExecRequest) -> Result<ExecResult> {
+        self.ensure_loaded(handle); // serve even after a restart rehydrated nothing yet
         let cwd = match &req.cwd {
             Some(c) => self.workspaces.resolve(handle, c)?,
             None => self.dir(handle),
@@ -235,17 +275,58 @@ impl Runtime for MockRuntime {
     }
 
     async fn pause(&self, handle: &str, _persist: bool) -> Result<()> {
+        self.ensure_loaded(handle);
         if let Some(s) = self.state.lock().unwrap().get_mut(handle) {
             s.paused = true;
         }
+        self.persist(handle);
         Ok(())
     }
 
     async fn resume(&self, handle: &str) -> Result<u64> {
+        self.ensure_loaded(handle);
         if let Some(s) = self.state.lock().unwrap().get_mut(handle) {
             s.paused = false;
         }
+        self.persist(handle);
         let ms = 180 + Self::jitter(handle, 60);
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        Ok(ms)
+    }
+
+    async fn standby(&self, handle: &str) -> Result<u64> {
+        // Snapshot-to-disk + free RAM. The dev runtime keeps the workspace on
+        // the host (its "disk"), so state survives; we flip the flag and persist
+        // the record so the sandbox can be restored even after a control-plane
+        // restart drops the in-memory map (Phase 1).
+        self.ensure_loaded(handle);
+        {
+            let mut state = self.state.lock().unwrap();
+            let s = state.get_mut(handle).context("standby: unknown vm")?;
+            s.standby = true;
+            s.paused = true;
+        }
+        self.persist(handle);
+        let ms = 90 + Self::jitter(handle, 40);
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        Ok(ms)
+    }
+
+    async fn restore(&self, handle: &str) -> Result<u64> {
+        // In-place restore from the on-disk snapshot. This is the perpetual-
+        // standby resume path; the dev runtime simulates the *optimized* target
+        // (page-cache-hot mem.file / UFFD demand paging — Phase 2), so the
+        // number models a < 25ms resume rather than a cold 180ms one. After a
+        // restart the in-memory record is gone, so rehydrate it from disk first.
+        self.ensure_loaded(handle);
+        {
+            let mut state = self.state.lock().unwrap();
+            let s = state.get_mut(handle).context("restore: unknown vm (no persisted record)")?;
+            s.standby = false;
+            s.paused = false;
+        }
+        self.persist(handle);
+        let ms = 12 + Self::jitter(handle, 8);
         tokio::time::sleep(Duration::from_millis(ms)).await;
         Ok(ms)
     }
@@ -257,11 +338,65 @@ impl Runtime for MockRuntime {
         Ok(SnapshotArtifact { handle: ids::snapshot_id(), storage_bytes: bytes })
     }
 
+    async fn fork(&self, parent_handle: &str, child_spec: &VmSpec) -> Result<VmInstance> {
+        // Instant sibling: copy the parent's workspace (its "disk") into a fresh
+        // VM so the child starts from the parent's exact state, then apply the
+        // child's own env and inline files on top.
+        let child = format!("vm_{}", child_spec.sandbox_id);
+        self.workspaces.create(&child)?;
+        let parent_ws = self.dir(parent_handle);
+        let child_ws = self.dir(&child);
+        copy_dir(&parent_ws, &child_ws).context("fork: copy parent workspace")?;
+
+        let mut resident_env = child_spec.env.clone();
+        resident_env.extend(child_spec.secret_env.clone());
+        self.state
+            .lock()
+            .unwrap()
+            .insert(child.clone(), VmState { paused: false, standby: false, resident_env });
+        self.persist(&child);
+        for (path, bytes) in &child_spec.files {
+            let _ = self.write_file(&child, path, bytes).await;
+        }
+
+        // Fork tracks resume latency (cloning the artifact, not booting).
+        let ms = 15 + Self::jitter(&child_spec.sandbox_id, 10);
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        Ok(VmInstance {
+            handle: child,
+            boot_path: BootPath::Fork,
+            boot_ms: ms,
+            image_cache_ms: 0,
+            browser_ready_ms: 0,
+            agent_ms: 0,
+        })
+    }
+
     async fn delete(&self, handle: &str) -> Result<()> {
         self.state.lock().unwrap().remove(handle);
         self.workspaces.remove(handle)?;
         Ok(())
     }
+}
+
+/// Recursively copy `src` into `dst` (used by `fork` to clone the parent's
+/// workspace). Missing `src` is treated as an empty tree.
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if !src.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 fn dir_size(path: &std::path::Path) -> u64 {

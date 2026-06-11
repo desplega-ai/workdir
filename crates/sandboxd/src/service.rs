@@ -558,11 +558,66 @@ pub async fn stop_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox> {
     }
 }
 
+/// Park an idle sandbox in perpetual standby (roadmap Phase 1): snapshot it,
+/// free its RAM, and stop billing. Unlike [`stop_sandbox`] — an explicit,
+/// user-initiated pause that requires an explicit resume — standby is automatic
+/// and transparent: the next request auto-resumes it (see [`ensure_running`]).
+/// Driven by the idle reaper. The caller must not invoke this on a sandbox with
+/// resident secrets (we never snapshot secrets, review M3); the reaper checks.
+pub async fn standby_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox> {
+    // CAS Running -> Stopping (the shared off-CPU transient); a concurrent
+    // stop/delete/reaper loses the race and we no-op.
+    let updated = match state
+        .store
+        .cas_sandbox(&sb.id, &[State::Running], |s| s.state = State::Stopping)
+        .map_err(ApiError::Internal)?
+    {
+        CasOutcome::Updated(s) => s,
+        CasOutcome::Conflict(State::Standby)
+        | CasOutcome::Conflict(State::Stopped)
+        | CasOutcome::Conflict(State::Stopping) => return Ok(sb),
+        CasOutcome::Conflict(other) => {
+            return Err(ApiError::Conflict(format!("cannot standby from {}", other.as_str())))
+        }
+        CasOutcome::NotFound => return Err(ApiError::NotFound(format!("sandbox {}", sb.id))),
+    };
+
+    // Billing stops the instant eviction begins — standby is $0 (review #4).
+    close_usage(state, &updated.id);
+
+    let handle = updated.runtime_handle.clone().unwrap_or_default();
+    let node = state.node_for(updated.node_id.as_deref().unwrap_or(""));
+    let result = node.standby(&handle).await;
+    let (next, err) = match &result {
+        Ok(_) => (State::Standby, None),
+        Err(e) => (State::Failed, Some(format!("standby failed: {e}"))),
+    };
+    let final_sb = state
+        .store
+        .cas_sandbox(&updated.id, &[State::Stopping], |s| {
+            s.state = next;
+            s.error = err.clone();
+            s.updated_at = Utc::now();
+        })
+        .map_err(ApiError::Internal)?;
+    match final_sb {
+        CasOutcome::Updated(s) => Ok(s),
+        _ => Ok(updated),
+    }
+}
+
 pub async fn resume_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox> {
-    // CAS Stopped -> Resuming; only one concurrent resume wins (review #2).
+    // CAS {Stopped|Standby} -> Resuming; only one concurrent resume wins
+    // (review #2). Capture which parked state we came from so we pick the right
+    // runtime op: a user-stopped VM is still RAM-resident (cheap `resume`),
+    // a standby VM had its RAM freed and must reload its snapshot (`restore`).
+    let mut from_standby = false;
     let resuming = match state
         .store
-        .cas_sandbox(&sb.id, &[State::Stopped], |s| s.state = State::Resuming)
+        .cas_sandbox(&sb.id, &[State::Stopped, State::Standby], |s| {
+            from_standby = s.state == State::Standby;
+            s.state = State::Resuming;
+        })
         .map_err(ApiError::Internal)?
     {
         CasOutcome::Updated(s) => s,
@@ -573,7 +628,12 @@ pub async fn resume_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox>
     };
     let handle = resuming.runtime_handle.clone().unwrap_or_default();
     let node = state.node_for(resuming.node_id.as_deref().unwrap_or(""));
-    let resume_ms = match node.resume(&handle).await {
+    let resume_result = if from_standby {
+        node.restore(&handle).await
+    } else {
+        node.resume(&handle).await
+    };
+    let resume_ms = match resume_result {
         Ok(ms) => ms,
         Err(e) => {
             state
@@ -603,13 +663,24 @@ pub async fn resume_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox>
     Ok(running)
 }
 
+/// Transparently bring a parked sandbox back before serving a request. A
+/// `standby` sandbox auto-resumes (the perpetual-standby promise — the user
+/// never sees that it was evicted); any other state is returned unchanged for
+/// the caller to handle (a user-`stopped` sandbox requires an explicit resume).
+pub async fn ensure_running(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox> {
+    if sb.state == State::Standby {
+        return resume_sandbox(state, sb).await;
+    }
+    Ok(sb)
+}
+
 pub async fn delete_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<()> {
     // CAS any non-terminal state -> Deleting.
     let deleting = match state
         .store
         .cas_sandbox(
             &sb.id,
-            &[State::Creating, State::Running, State::Resuming, State::Stopping, State::Stopped, State::Failed],
+            &[State::Creating, State::Running, State::Resuming, State::Stopping, State::Stopped, State::Standby, State::Failed],
             |s| s.state = State::Deleting,
         )
         .map_err(ApiError::Internal)?
@@ -666,6 +737,142 @@ pub async fn snapshot_sandbox(state: &AppState, sb: &Sandbox) -> ApiResult<Snaps
     };
     state.store.put_snapshot(&snap).map_err(ApiError::Internal)?;
     Ok(snap)
+}
+
+/// Fork a running sandbox into an instant sibling (roadmap Phase 3). The child
+/// is a brand-new sandbox cloned from the parent's live memory+disk snapshot —
+/// same image and shape, its own id and billing, colocated on the parent's node
+/// for artifact locality. "Nearly free once snapshots are solid": its boot path
+/// is [`BootPath::Fork`] and its latency tracks resume, not cold boot.
+pub async fn fork_sandbox(state: &AppState, ctx: &AuthContext, parent: Sandbox) -> ApiResult<Sandbox> {
+    let wall_start = Instant::now();
+
+    // Never copy resident secrets into the child (review M3).
+    if !parent.secret_names.is_empty() {
+        return Err(ApiError::Conflict(
+            "cannot fork a sandbox with resident secrets; remove secrets and retry".into(),
+        ));
+    }
+    // The parent must be live; a standby parent transparently auto-resumes first.
+    let parent = ensure_running(state, parent).await?;
+    if parent.state != State::Running {
+        return Err(ApiError::Conflict(format!("cannot fork a {} sandbox", parent.state.as_str())));
+    }
+    let parent_handle = parent
+        .runtime_handle
+        .clone()
+        .ok_or_else(|| ApiError::Conflict("parent has no runtime handle".into()))?;
+    let parent_node = parent.node_id.clone().unwrap_or_default();
+
+    // --- org / credit admission (mirror create) -------------------------
+    let org = state.store.get_org(&ctx.org_id).map_err(ApiError::Internal)?.ok_or(ApiError::Unauthorized)?;
+    if org.status == OrgStatus::Suspended {
+        return Err(ApiError::Forbidden("org suspended".into()));
+    }
+    if !ctx.admin {
+        let intervals = state.store.usage_for_org(&ctx.org_id).map_err(ApiError::Internal)?;
+        if crate::usage::live_balance_usd(&org, &intervals, Utc::now()) <= 0.0 {
+            return Err(ApiError::Forbidden("no prepaid credits remaining".into()));
+        }
+    }
+
+    let class = classify(&parent.image).map_err(ApiError::BadRequest)?;
+    let resources = parent.resources;
+    let placement_req = PlacementRequest {
+        org_id: ctx.org_id.clone(),
+        image_key: class.key().to_string(),
+        resources,
+        browser_required: parent.browser.is_some(),
+        is_custom_image: class.is_custom(),
+    };
+
+    // --- admission: capacity on the parent's node + quota ----------------
+    let admission_guard = state.admission.lock().await;
+    if !ctx.admin && !org.quota_unlimited() {
+        let used = org_active_units(state, &ctx.org_id)?;
+        let req_units = units_for_memory_gb(resources.memory_gb());
+        if used + req_units > org.quota_units + 1e-9 {
+            return Err(ApiError::Forbidden(format!(
+                "org quota exceeded: {used:.1} + {req_units:.1} > {:.1} units",
+                org.quota_units
+            )));
+        }
+    }
+    // Reuse the scheduler's admission ceiling, restricted to the parent's node
+    // (fork colocates with the parent so it can copy the snapshot locally).
+    let snapshots = gather_node_snapshots(state, &placement_req).await?;
+    let here: Vec<NodeSnapshot> = snapshots.into_iter().filter(|s| s.node.id == parent_node).collect();
+    scheduler::select(&placement_req, &here)
+        .map_err(|r| ApiError::NoCapacity { reason: r.reason, detail: r.detail })?;
+
+    // --- build child spec + reserve a creating record -------------------
+    let child_id = ids::sandbox_id();
+    let env = parent.startup.as_ref().map(|s| s.env.clone()).unwrap_or_default();
+    let child_spec = VmSpec {
+        sandbox_id: child_id.clone(),
+        org_id: ctx.org_id.clone(),
+        image_key: class.key().to_string(),
+        image_ref: parent.image.clone(),
+        resources,
+        env,
+        secret_env: BTreeMap::new(), // never inherit secrets
+        browser: parent.browser.clone(),
+        docker: parent.docker,
+        coding_agent: None,
+        mounts: parent.mounts.clone(),
+        files: vec![],
+    };
+
+    let now = Utc::now();
+    let mut child = Sandbox {
+        id: child_id.clone(),
+        org_id: ctx.org_id.clone(),
+        state: State::Creating,
+        node_id: Some(parent_node.clone()),
+        image: parent.image.clone(),
+        resources,
+        auto_stop_seconds: parent.auto_stop_seconds,
+        snapshot_enabled: parent.snapshot_enabled,
+        browser: parent.browser.clone(),
+        startup: parent.startup.clone(),
+        boot_path: BootPath::Fork,
+        timings: Timings::default(),
+        secret_names: vec![],
+        docker: parent.docker,
+        coding_agent: parent.coding_agent.clone(),
+        mounts: parent.mounts.clone(),
+        ports: vec![],
+        runtime_handle: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+        last_active_at: now,
+    };
+    state.store.put_sandbox(&child).map_err(ApiError::Internal)?;
+    drop(admission_guard);
+
+    let node = state.node_for(&parent_node);
+    let instance = match node.fork(&parent_handle, &child_spec).await {
+        Ok(i) => i,
+        Err(e) => {
+            child.state = State::Failed;
+            child.error = Some(format!("fork failed: {e}"));
+            child.updated_at = Utc::now();
+            state.store.put_sandbox(&child).ok();
+            return Err(ApiError::Internal(e));
+        }
+    };
+
+    child.runtime_handle = Some(instance.handle.clone());
+    child.boot_path = instance.boot_path;
+    child.state = State::Running;
+    child.timings.boot_ms = instance.boot_ms;
+    child.timings.total_ms = wall_start.elapsed().as_millis() as u64;
+    child.updated_at = Utc::now();
+    child.last_active_at = Utc::now();
+    state.store.put_sandbox(&child).map_err(ApiError::Internal)?;
+    open_usage(state, &child);
+    Ok(child)
 }
 
 /// Touch activity so the idle detector does not auto-stop a busy sandbox.
