@@ -495,6 +495,12 @@ impl FirecrackerRuntime {
                     "vcpu_count": vcpus,
                     "mem_size_mib": mem_mib,
                     "smt": false,
+                    // Required for snapshots: without it, `snapshot/create` calls
+                    // KVM_GET_DIRTY_LOG, which returns ENOENT (the memslots aren't
+                    // dirty-logged) and Firecracker dies. Also enables diff
+                    // snapshots (Phase 2). Must be set at boot — it can't be
+                    // turned on for an already-running VM.
+                    "track_dirty_pages": true,
                 });
                 // CPU template masks host CPUID to a portable baseline so a
                 // snapshot restores across heterogeneous hosts (Phase 2 lever #4).
