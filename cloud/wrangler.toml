@@ -1,0 +1,19 @@
+name = "workdir-cloud"
+main = "src/index.ts"
+compatibility_date = "2024-11-27"
+# Workers Web Crypto covers PBKDF2 + SHA-256; no extra flags needed.
+
+# D1 database (run `npm run db:create`, then paste the returned id here).
+[[d1_databases]]
+binding = "DB"
+database_name = "workdir"
+database_id = "REPLACE_WITH_ID_FROM_d1_create"
+
+[vars]
+# Public base URL of the headless workdir daemon on Hetzner. In production this
+# is fronted by a Cloudflare Tunnel (see README), so it never opens a port.
+WORKDIR_API_URL = "https://api.workdir.dev"
+
+# Secrets (DO NOT put here) — set with `wrangler secret put <NAME>`:
+#   WORKDIR_ADMIN_KEY   the daemon's admin API key (provisions/revokes keys)
+#   SESSION_SECRET      random 32+ char string for signing/session entropy

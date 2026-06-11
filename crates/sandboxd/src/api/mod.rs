@@ -2,6 +2,7 @@
 //! API-key auth middleware; preview/VNC traffic is served by a host-routed
 //! fallback (spec §16.2).
 
+pub mod admin;
 pub mod images;
 pub mod nodes;
 pub mod preview;
@@ -18,7 +19,7 @@ use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 
@@ -43,6 +44,10 @@ pub fn router(state: AppState) -> Router {
         .route("/secrets/:name", put(secrets::put).delete(secrets::delete))
         .route("/usage", get(usage::usage))
         .route("/admin/overview", get(usage::admin_overview))
+        .route("/admin/orgs", post(admin::create_org))
+        .route("/admin/orgs/:org/usage", get(admin::org_usage))
+        .route("/admin/keys", post(admin::register_key))
+        .route("/admin/keys/:hash", delete(admin::revoke_key))
         .route("/benchmarks", get(usage::benchmarks))
         .layer(middleware::from_fn_with_state(state.clone(), auth_mw));
 
