@@ -211,7 +211,7 @@ Group=workdir
 AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_MKNOD CAP_DAC_OVERRIDE
 Environment=WORKDIR_CONFIG=/etc/workdir/config.toml
 Environment=RUST_LOG=info,sandboxd=info
-ExecStart=/usr/local/bin/workdir serve --config /etc/workdir/config.toml
+ExecStart=/usr/local/bin/workdir serve
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=1048576

@@ -7,7 +7,7 @@ compatibility_date = "2024-11-27"
 [[d1_databases]]
 binding = "DB"
 database_name = "workdir"
-database_id = "REPLACE_WITH_ID_FROM_d1_create"
+database_id = "d31db908-139e-41c4-ba04-eea3ef72dff2"
 
 [vars]
 # Public base URL of the headless workdir daemon on Hetzner. In production this
