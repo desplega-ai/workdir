@@ -13,6 +13,7 @@ pub mod catalog;
 pub mod config;
 pub mod config_example;
 pub mod error;
+pub mod host;
 pub mod hotpool;
 pub mod ids;
 pub mod images;

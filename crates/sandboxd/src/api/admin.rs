@@ -122,6 +122,83 @@ pub async fn revoke_key(
     Ok(Json(json!({ "revoked": true })))
 }
 
+/// Real-time operational metrics: host health + every live sandbox with its
+/// shape, owner (org), and cost. Powers the operator monitoring dashboard.
+pub async fn metrics(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&ctx)?;
+    let now = Utc::now();
+
+    let host = crate::host::collect(&state.cfg.server.data_dir).await;
+
+    // Local node capacity.
+    let node = state.store.get_node(&state.local_node_id).map_err(ApiError::Internal)?;
+    let active = state.store.all_active_sandboxes().map_err(ApiError::Internal)?;
+
+    let mut by_state: std::collections::BTreeMap<String, u64> = Default::default();
+    let mut by_image: std::collections::BTreeMap<String, u64> = Default::default();
+    let mut committed_memory_mb: u64 = 0;
+    let mut sandboxes = Vec::with_capacity(active.len());
+    for sb in &active {
+        let class = crate::catalog::classify(&sb.image).unwrap_or(crate::catalog::ImageClass::Base);
+        let price = crate::pricing::quote(&state.cfg.pricing, &sb.resources, &class).price_usd_hr;
+        let uptime = (now - sb.created_at).num_seconds().max(0);
+        committed_memory_mb += sb.resources.memory_mb as u64;
+        *by_state.entry(sb.state.as_str().to_string()).or_default() += 1;
+        *by_image.entry(sb.image.clone()).or_default() += 1;
+        sandboxes.push(json!({
+            "id": sb.id,
+            "org_id": sb.org_id,
+            "image": sb.image,
+            "cpu": sb.resources.cpu,
+            "memory_mb": sb.resources.memory_mb,
+            "disk_gb": sb.resources.disk_gb,
+            "state": sb.state.as_str(),
+            "boot_path": sb.boot_path.as_str(),
+            "created_at": sb.created_at,
+            "uptime_seconds": uptime,
+            "docker": sb.docker,
+            "browser": sb.browser_enabled(),
+            "secret_count": sb.secret_names.len(),
+            "node_id": sb.node_id,
+            "price_usd_hr": price,
+        }));
+    }
+
+    let committed_units = committed_memory_mb as f64 / 1024.0 / crate::capacity::UNIT_MEMORY_GB;
+    let capacity = node.as_ref().map(|n| {
+        let cap = n.capacity();
+        json!({
+            "practical_units": cap.practical_units,
+            "theoretical_units": cap.theoretical_units,
+            "committed_units": (committed_units * 10.0).round() / 10.0,
+            "free_units": (cap.practical_units as f64 - committed_units).max(0.0),
+        })
+    });
+    let pools = state.local.pool_status().await;
+
+    Ok(Json(json!({
+        "at": now,
+        "node": {
+            "node_id": state.local_node_id,
+            "host": host,
+            "capacity": capacity,
+            "runtime": state.local.runtime_kind(),
+        },
+        "hot_pools": pools,
+        "summary": {
+            "live_sandboxes": active.len(),
+            "by_state": by_state,
+            "by_image": by_image,
+            "committed_memory_mb": committed_memory_mb,
+            "committed_units": (committed_units * 10.0).round() / 10.0,
+        },
+        "sandboxes": sandboxes,
+    })))
+}
+
 /// Per-org usage for the dashboard (admin view of any org).
 pub async fn org_usage(
     State(state): State<AppState>,
