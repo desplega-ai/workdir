@@ -22,6 +22,7 @@ pub mod model;
 pub mod node;
 pub mod nodes;
 pub mod pricing;
+pub mod remote;
 pub mod runtime;
 pub mod scheduler;
 pub mod secrets;
