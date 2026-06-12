@@ -33,6 +33,7 @@ pub fn router(state: AppState) -> Router {
         .route("/sandboxes/:id/files", get(sandboxes::read_file).put(sandboxes::write_file))
         .route("/sandboxes/:id/ports/:port/expose", post(sandboxes::expose_port))
         .route("/sandboxes/:id/browser", post(sandboxes::browser_get).get(sandboxes::browser_get))
+        .route("/sandboxes/:id/browser/screenshot", get(sandboxes::browser_screenshot))
         .route("/sandboxes/:id/snapshot", post(sandboxes::snapshot))
         .route("/sandboxes/:id/fork", post(sandboxes::fork))
         .route("/sandboxes/:id/pause", post(sandboxes::pause))

@@ -186,9 +186,122 @@ pub async fn browser_get(
         "urls": {
             "vnc": state.preview_url(&sb.id, 6080),
             "cdp": state.preview_url(&sb.id, 9222),
-            "screenshot": format!("{}/v1/sandboxes/{}/browser/screenshot", "", sb.id),
+            "screenshot": format!("/v1/sandboxes/{}/browser/screenshot", sb.id),
         }
     })))
+}
+
+/// Capture a PNG still of the browser sandbox's page via CDP
+/// `Page.captureScreenshot`. The live desktop is the VNC URL; this is the
+/// convenience snapshot advertised by `browser_get`.
+pub async fn browser_screenshot(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let sb = match load_owned(&state, &ctx, &id) {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+    if !sb.browser_enabled() {
+        return ApiError::BadRequest("browser is not enabled on this sandbox".into()).into_response();
+    }
+    // A parked browser sandbox transparently auto-resumes, same as exec.
+    let mut sb = match service::ensure_running(&state, sb).await {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+    if !sb.state.is_active() {
+        return ApiError::Conflict(format!("sandbox is {}", sb.state.as_str())).into_response();
+    }
+    let handle = match sb.runtime_handle.clone() {
+        Some(h) => h,
+        None => return ApiError::Conflict("no runtime handle".into()).into_response(),
+    };
+    service::touch_activity(&state, &mut sb);
+
+    // chrome binds CDP to the guest's 127.0.0.1:9222 (the init forwards
+    // eth0:9222 → there); expose_port gives a host-reachable address for it.
+    let upstream = match state
+        .node_for(sb.node_id.as_deref().unwrap_or(""))
+        .expose_port(&handle, 9222)
+        .await
+    {
+        Ok(a) => a,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("cdp expose failed: {e}")).into_response(),
+    };
+    match capture_cdp_png(upstream).await {
+        Ok(png) => ([(axum::http::header::CONTENT_TYPE, "image/png")], png).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("screenshot failed: {e}")).into_response(),
+    }
+}
+
+/// Drive CDP over a websocket to grab a PNG of the active page.
+async fn capture_cdp_png(upstream: std::net::SocketAddr) -> anyhow::Result<Vec<u8>> {
+    use anyhow::Context;
+    use base64::Engine;
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let targets: Vec<Value> = http
+        .get(format!("http://{upstream}/json"))
+        .send()
+        .await
+        .context("GET cdp /json")?
+        .json()
+        .await
+        .context("parse cdp /json")?;
+    let page = targets
+        .iter()
+        .find(|t| t["type"] == "page")
+        .or_else(|| targets.first())
+        .context("no CDP page target")?;
+    let ws_dbg = page["webSocketDebuggerUrl"]
+        .as_str()
+        .context("no webSocketDebuggerUrl")?;
+    // chrome reports its own 127.0.0.1:9222 host — rewrite to the host-reachable
+    // upstream, keeping the /devtools/page/<id> path.
+    let path = ws_dbg
+        .find("/devtools")
+        .map(|i| &ws_dbg[i..])
+        .context("unexpected ws debugger url")?;
+    let ws_url = format!("ws://{upstream}{path}");
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.context("cdp ws connect")?;
+    ws.send(Message::Text(
+        r#"{"id":1,"method":"Page.captureScreenshot","params":{"format":"png"}}"#.to_string(),
+    ))
+    .await
+    .context("send captureScreenshot")?;
+
+    loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(15), ws.next())
+            .await
+            .context("captureScreenshot timed out")?;
+        let msg = match msg {
+            Some(Ok(m)) => m,
+            _ => anyhow::bail!("cdp ws closed before result"),
+        };
+        if let Message::Text(t) = msg {
+            let v: Value = match serde_json::from_str(&t) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if v["id"] == 1 {
+                if let Some(data) = v["result"]["data"].as_str() {
+                    let _ = ws.close(None).await;
+                    return base64::engine::general_purpose::STANDARD
+                        .decode(data)
+                        .context("decode screenshot base64");
+                }
+                anyhow::bail!("cdp error: {}", v["error"]);
+            }
+        }
+    }
 }
 
 pub async fn snapshot(
