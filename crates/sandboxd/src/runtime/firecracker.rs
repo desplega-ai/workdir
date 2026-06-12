@@ -1343,17 +1343,17 @@ impl Runtime for FirecrackerRuntime {
                 tokio::spawn(async move { prewarm_page_cache(&m).await });
             }
         }
+        // The snapshot's NIC references the *parent's* tap, which the parent is
+        // still holding (fork keeps the parent live) — so reopening it during
+        // restore would hit EBUSY. `network_overrides` remaps eth0 to the child's
+        // own tap at load time, so it opens a free device and resumes directly.
         self.fc_api_to(&child_sock, "PUT", "/snapshot/load", &json!({
             "snapshot_path": snap_api,
             "mem_backend": { "backend_path": mem_api, "backend_type": "File" },
             "enable_diff_snapshots": true,
-            "resume_vm": false,
+            "network_overrides": [{ "iface_id": "eth0", "host_dev_name": tap.clone() }],
+            "resume_vm": true,
         }), 300).await?;
-        // Repoint the restored NIC at the child's own tap, then resume.
-        self.fc_api(&child_sock, "PATCH", "/network-interfaces/eth0", &json!({
-            "iface_id": "eth0", "host_dev_name": tap.clone(),
-        })).await?;
-        self.fc_api(&child_sock, "PATCH", "/vm", &json!({"state": "Resumed"})).await?;
 
         self.vms.lock().unwrap().insert(
             child.clone(),
