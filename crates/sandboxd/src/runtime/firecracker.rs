@@ -421,10 +421,22 @@ impl FirecrackerRuntime {
             let rdst = chroot_root.join("rootfs.ext4");
             tokio::process::Command::new("cp").arg(&self.kernel_image).arg(&kdst).status().await
                 .context("stage kernel into chroot")?;
-            tokio::process::Command::new("cp").args(["--reflink=auto"]).arg(&rootfs).arg(&rdst).status().await
-                .context("stage rootfs into chroot")?;
             let owner = format!("{uid}:{uid}");
-            let _ = tokio::process::Command::new("chown").arg(&owner).arg(&kdst).arg(&rdst).status().await;
+            let _ = tokio::process::Command::new("chown").arg(&owner).arg(&kdst).status().await;
+            // Phase 3 density: with `shared_rootfs`, HARDLINK the read-only base
+            // into the chroot — same inode → one copy in the host page cache
+            // shared by every VM, instant, zero extra disk. No chown: that would
+            // mutate the shared inode's owner; the base is world-readable so the
+            // jailed uid still opens it read-only. The guest layers tmpfs+overlayfs
+            // for writes (wd.overlay=tmpfs). Without sharing, give each VM its own
+            // reflinked COW copy (chowned to the jailed uid) as before.
+            if self.shared_rootfs && std::fs::hard_link(&rootfs, &rdst).is_ok() {
+                // shared inode staged (read-only, world-readable)
+            } else {
+                tokio::process::Command::new("cp").args(["--reflink=auto"]).arg(&rootfs).arg(&rdst).status().await
+                    .context("stage rootfs into chroot")?;
+                let _ = tokio::process::Command::new("chown").arg(&owner).arg(&rdst).status().await;
+            }
             (
                 chroot_root.join("api.sock"),
                 chroot_root.join("vsock.sock"),
