@@ -237,7 +237,15 @@ this, capacity is a hardware question, not an architecture one.
 
 ### Phase 5 — Desktops and persistence (parallel, 2–4 weeks)
 
-- Merge the **browser/VNC desktop** branch — computer-use desktops.
+- **Browser/VNC desktop — validated on the node.** The `browser` image boots the
+  full computer-use desktop (Xvfb → fluxbox → Chrome → x11vnc → noVNC :6080),
+  exposes VNC via the preview proxy, and serves
+  `GET /v1/sandboxes/:id/browser/screenshot` — a PNG of the live X desktop
+  (captured with ImageMagick `import`, then read back; verified end to end). It
+  also gets the Phase 3 shared-rootfs overlay (the browser init pivots into a
+  tmpfs+overlayfs root). *Known follow-up:* Chrome's CDP debug port (9222)
+  doesn't bind under chrome-as-root, so the advertised `cdp` url is dead until
+  chrome runs as a non-root user — VNC + screenshot are unaffected.
 - Add **persistent volumes** (block storage surviving delete) so workspace state
   survives across sessions.
 - Declarative custom-image builds already exist.

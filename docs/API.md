@@ -18,7 +18,8 @@ The default create is one call with no body and yields the cheapest, fastest pat
 | `GET` | `/v1/sandboxes/:id/files?path=…` | Read a file → `{content, encoding}`. |
 | `PUT` | `/v1/sandboxes/:id/files` | `{path, content, encoding?}` → write. |
 | `POST` | `/v1/sandboxes/:id/ports/:port/expose` | → `{port, url}` preview route. |
-| `GET`/`POST` | `/v1/sandboxes/:id/browser` | Browser readiness + VNC/CDP urls. |
+| `GET`/`POST` | `/v1/sandboxes/:id/browser` | Browser readiness + VNC/CDP urls + screenshot url. |
+| `GET` | `/v1/sandboxes/:id/browser/screenshot` | PNG of the live desktop (X root window). |
 | `POST` | `/v1/sandboxes/:id/snapshot` | Snapshot (billed separately). |
 | `POST` | `/v1/sandboxes/:id/fork` | Clone an instant sibling from the parent's live state (`boot_path: "fork"`). |
 | `POST` | `/v1/sandboxes/:id/pause` | Stop (release CPU/mem; keep billing correct). |
