@@ -360,11 +360,19 @@ impl FirecrackerRuntime {
             }
         }
         // Restore chroots are "<jail-id>-rN"; the jailer refuses an existing
-        // chroot dir, so resume the suffix above any survivor.
+        // chroot dir, so resume the suffix above any survivor. Stale `pool-N`
+        // chroots are DELETED instead: pooled processes die with the daemon's
+        // cgroup, and a leftover chroot both makes the jailer refuse the reused
+        // id and leaves a dead api.sock that fools an existence poll (observed
+        // on the node as ConnectionRefused golden restores after a restart).
         let mut next_restore = 0u32;
         if let Ok(entries) = std::fs::read_dir(chroot_base.join("firecracker")) {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with("pool-") {
+                    let _ = std::fs::remove_dir_all(e.path());
+                    continue;
+                }
                 if let Some((_, n)) = name.rsplit_once("-r") {
                     if let Ok(n) = n.parse::<u32>() {
                         next_restore = next_restore.max(n + 1);
@@ -1114,11 +1122,15 @@ impl FirecrackerRuntime {
             .context("spawn pooled jailer")?
             .id();
         let api = chroot_root.join("api.sock");
-        if !poll_until(Duration::from_secs(4), || api.exists()).await {
+        poll_until(Duration::from_secs(4), || api.exists()).await;
+        // Existence is not enough — a stale sock file from a dead process
+        // passes that check; the pool must only hold processes that ACCEPT.
+        if let Err(e) = Self::fc_connect(&api).await {
             if let Some(pid) = pid {
                 let _ = tokio::process::Command::new("kill").arg("-9").arg(pid.to_string()).status().await;
             }
-            bail!("pooled jailer api socket never appeared");
+            let _ = std::fs::remove_dir_all(self.chroot_base.join("firecracker").join(&jail_id));
+            return Err(e.context("pooled firecracker never accepted a connection"));
         }
         Ok(PooledJail { jail_id, chroot_root, uid, pid })
     }
@@ -2399,5 +2411,33 @@ mod tests {
         );
         // Its dir is now orphaned and sweepable.
         assert_eq!(rt.gc_stale_jails_min_age(0), 1);
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+    use crate::config::RuntimeConfig;
+
+    #[test]
+    fn restart_removes_stale_pool_chroots() {
+        // Pooled processes die with the daemon's cgroup; their chroots must not
+        // survive into the next run (the jailer refuses an existing chroot, and
+        // the leftover api.sock fools an existence poll — observed on the node).
+        let tmp = tempfile::tempdir().unwrap();
+        let chroot_base = tmp.path().join("jail");
+        std::fs::create_dir_all(chroot_base.join("firecracker").join("pool-0").join("root")).unwrap();
+        std::fs::create_dir_all(chroot_base.join("firecracker").join("pool-7").join("root")).unwrap();
+        // A restore chroot must be left alone (and bump the counter).
+        std::fs::create_dir_all(chroot_base.join("firecracker").join("vm-sbx-x-r1")).unwrap();
+
+        let mut cfg = RuntimeConfig::default();
+        cfg.workspace_dir = tmp.path().to_path_buf();
+        let rt = FirecrackerRuntime::new(&cfg);
+
+        assert!(!chroot_base.join("firecracker").join("pool-0").exists());
+        assert!(!chroot_base.join("firecracker").join("pool-7").exists());
+        assert!(chroot_base.join("firecracker").join("vm-sbx-x-r1").exists());
+        assert_eq!(rt.next_restore.load(Ordering::SeqCst), 2);
     }
 }
