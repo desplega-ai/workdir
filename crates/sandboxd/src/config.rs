@@ -15,6 +15,7 @@ pub struct Config {
     pub hotpool: HotPoolConfig,
     pub auth: AuthConfig,
     pub standby: StandbyConfig,
+    pub capacity: CapacityConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,6 +102,24 @@ pub struct RuntimeConfig {
     /// passthrough; snapshots are then only portable within identical hardware).
     #[serde(default)]
     pub cpu_template: String,
+    /// Attach a virtio-balloon device to every VM (with deflate-on-OOM and 1s
+    /// stats polling). Enables the soft-standby tier (`standby.
+    /// balloon_idle_seconds`) and per-VM guest memory stats; snapshots carry
+    /// the device, so flipping this only affects newly booted VMs.
+    #[serde(default)]
+    pub balloon: bool,
+    /// Keep this many idle jailer+Firecracker processes pre-spawned, each with
+    /// its api.sock already listening, so a standby resume / golden restore
+    /// skips the jailer relaunch (~30 ms — the measured floor of the resume
+    /// path once demand paging landed). 0 disables the pool. Jailer-only.
+    #[serde(default)]
+    pub jailer_pool_size: u32,
+    /// Append `quiet loglevel=1` to the guest kernel cmdline. Serial-console
+    /// boot logging runs at virtualized-UART speed and is a measurable share of
+    /// cold-boot latency; the console stays attached, so panics still surface.
+    /// Disable when debugging guest boot problems.
+    #[serde(default = "default_true_bool")]
+    pub quiet_guest_boot: bool,
     /// Run Firecracker with its built-in seccomp filter disabled (`--no-seccomp`).
     /// Firecracker's default per-thread filter can SIGSYS-kill the process during
     /// `snapshot/create` (a blocked syscall on the vmm thread; firecracker#1088),
@@ -138,6 +157,48 @@ pub struct StandbyConfig {
     /// default so the snapshot/restore path can be validated on a given node
     /// (e.g. via `POST /v1/benchmarks/run`) before real sandboxes depend on it.
     pub enabled: bool,
+    /// Soft standby: after this many idle seconds (but before the snapshot
+    /// eviction window), inflate the guest balloon to hand free guest memory
+    /// back to the host — zero resume latency, smaller RSS. Deflated again when
+    /// activity returns. 0 disables. Requires `runtime.balloon`.
+    pub balloon_idle_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CapacityConfig {
+    /// Memory reserved for the host and never sold to sandboxes (GB). The spec
+    /// default (12) predates the shared rootfs (one base image in page cache
+    /// instead of N copies); measure before trimming.
+    pub host_reserve_gb: f64,
+    /// Fraction of theoretical memory slots admitted statically (spec §9.1's
+    /// 20/26 on a 64 GB node).
+    pub practical_derate: f64,
+    /// Admit on measured host memory too: when the static shape-sum ceiling is
+    /// full but `MemAvailable` still clears `overcommit_headroom_gb` beyond the
+    /// request, admit anyway. Guests fault their pages lazily and idle
+    /// sandboxes are parked at $0, so shape sums badly overstate real usage.
+    /// Enable together with `psi_standby_threshold` — the pressure reaper is
+    /// the backpressure that makes overcommit safe.
+    pub overcommit: bool,
+    /// Minimum measured headroom (GB) kept free when overcommitting.
+    pub overcommit_headroom_gb: f64,
+    /// When memory PSI (`some avg10` in /proc/pressure/memory) exceeds this
+    /// percentage, park the least-recently-active running sandbox in standby
+    /// ahead of its idle window. 0 disables. Requires `[standby] enabled`.
+    pub psi_standby_threshold: f64,
+}
+
+impl Default for CapacityConfig {
+    fn default() -> Self {
+        CapacityConfig {
+            host_reserve_gb: crate::capacity::DEFAULT_HOST_RESERVE_GB,
+            practical_derate: crate::capacity::PRACTICAL_DERATE,
+            overcommit: false,
+            overcommit_headroom_gb: 8.0,
+            psi_standby_threshold: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -196,6 +257,9 @@ impl Default for RuntimeConfig {
             prewarm_mem_cache: true,
             shared_rootfs: false,
             cpu_template: String::new(),
+            balloon: false,
+            jailer_pool_size: 0,
+            quiet_guest_boot: true,
             firecracker_no_seccomp: false,
         }
     }

@@ -32,6 +32,9 @@ struct VmState {
     paused: bool,
     /// Parked in perpetual standby: snapshot taken, "RAM" freed (Phase 1).
     standby: bool,
+    /// Simulated balloon target in MiB (0 = deflated).
+    #[serde(default)]
+    ballooned_mib: u32,
     /// Env that persists across exec calls: startup env + injected secrets.
     resident_env: std::collections::BTreeMap<String, String>,
 }
@@ -41,6 +44,9 @@ pub struct MockRuntime {
     /// Persistent-volume backing stores (Phase 5). Each volume is a plain host
     /// directory here; production backs it with a labelled ext4 image.
     volumes_dir: std::path::PathBuf,
+    /// Golden image-snapshot markers (one file per image+shape), simulating the
+    /// production artifacts that turn empty-pool creates into snapshot restores.
+    golden_dir: std::path::PathBuf,
     state: Mutex<HashMap<String, VmState>>,
 }
 
@@ -49,11 +55,17 @@ impl MockRuntime {
         workspace_root: impl Into<std::path::PathBuf>,
         volumes_dir: impl Into<std::path::PathBuf>,
     ) -> MockRuntime {
+        let root: std::path::PathBuf = workspace_root.into();
         MockRuntime {
-            workspaces: Workspaces::new(workspace_root),
+            golden_dir: root.join("_golden"),
+            workspaces: Workspaces::new(root),
             volumes_dir: volumes_dir.into(),
             state: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn golden_marker(&self, image_key: &str, memory_mb: u32) -> std::path::PathBuf {
+        self.golden_dir.join(format!("{image_key}-{memory_mb}.ok"))
     }
 
     /// Simulate a block-volume attach: the volume's data lives in a host dir
@@ -128,6 +140,22 @@ impl Runtime for MockRuntime {
         "mock"
     }
 
+    fn golden_snapshot_available(&self, image_key: &str, resources: &crate::knobs::Resources) -> bool {
+        self.golden_marker(image_key, resources.memory_mb).exists()
+    }
+
+    async fn ensure_golden_snapshot(&self, spec: &VmSpec) -> Result<bool> {
+        let marker = self.golden_marker(&spec.image_key, spec.resources.memory_mb);
+        if marker.exists() {
+            return Ok(false);
+        }
+        std::fs::create_dir_all(&self.golden_dir)?;
+        // Producing a golden costs a one-time boot+snapshot; model a small cost.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        std::fs::write(&marker, b"golden (dev simulation)")?;
+        Ok(true)
+    }
+
     async fn prewarm(&self, spec: &VmSpec) -> Result<WarmVm> {
         let handle = format!("warm_{}_{}", spec.image_key, &ids::sandbox_id()[4..]);
         self.workspaces.create(&handle)?;
@@ -197,7 +225,7 @@ impl Runtime for MockRuntime {
         self.state
             .lock()
             .unwrap()
-            .insert(handle.clone(), VmState { paused: false, standby: false, resident_env });
+            .insert(handle.clone(), VmState { paused: false, standby: false, ballooned_mib: 0, resident_env });
         self.persist(&handle);
 
         Ok(VmInstance { handle, boot_path, boot_ms, image_cache_ms, browser_ready_ms, agent_ms: 0 })
@@ -252,7 +280,12 @@ impl Runtime for MockRuntime {
         let stdin = child.stdin.take().context("pty stdin")?;
         let stdout = child.stdout.take().context("pty stdout")?;
         let stderr = child.stderr.take().context("pty stderr")?;
-        Ok(PtySession { child, stdin, stdout, stderr })
+        Ok(PtySession {
+            input: Box::new(stdin),
+            output: Box::new(stdout),
+            stderr: Some(Box::new(stderr)),
+            child: Some(child),
+        })
     }
 
     async fn write_file(&self, handle: &str, path: &str, bytes: &[u8]) -> Result<()> {
@@ -387,7 +420,7 @@ impl Runtime for MockRuntime {
         self.state
             .lock()
             .unwrap()
-            .insert(child.clone(), VmState { paused: false, standby: false, resident_env });
+            .insert(child.clone(), VmState { paused: false, standby: false, ballooned_mib: 0, resident_env });
         self.persist(&child);
         for (path, bytes) in &child_spec.files {
             let _ = self.write_file(&child, path, bytes).await;
@@ -410,6 +443,33 @@ impl Runtime for MockRuntime {
         self.state.lock().unwrap().remove(handle);
         self.workspaces.remove(handle)?;
         Ok(())
+    }
+
+    async fn balloon(&self, handle: &str, amount_mib: u32) -> Result<()> {
+        self.ensure_loaded(handle);
+        let mut state = self.state.lock().unwrap();
+        let s = state.get_mut(handle).context("balloon: unknown vm")?;
+        if s.standby {
+            anyhow::bail!("cannot balloon a standby vm");
+        }
+        s.ballooned_mib = amount_mib;
+        Ok(())
+    }
+
+    async fn vm_metrics(&self, handle: &str) -> Option<super::VmMetrics> {
+        self.ensure_loaded(handle);
+        let ballooned = {
+            let state = self.state.lock().unwrap();
+            state.get(handle)?.ballooned_mib
+        };
+        // Simulated host footprint: the workspace plus a fixed process overhead.
+        let rss = 64 * 1024 * 1024 + dir_size(&self.workspaces.dir_for(handle));
+        Some(super::VmMetrics {
+            host_rss_bytes: Some(rss),
+            balloon_target_mib: (ballooned > 0).then_some(ballooned),
+            balloon_stats: Some(serde_json::json!({"simulated": true})),
+            net: None,
+        })
     }
 
     async fn create_volume(&self, volume_id: &str, _size_gb: u32) -> Result<()> {

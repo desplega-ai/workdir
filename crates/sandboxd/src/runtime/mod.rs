@@ -17,7 +17,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::process::Child;
 
 /// Everything the runtime needs to boot one microVM.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -102,15 +103,36 @@ pub struct SnapshotArtifact {
     pub storage_bytes: u64,
 }
 
-/// An interactive shell session (the `/pty` endpoint). The development runtime
-/// backs this with a piped child shell; the Firecracker runtime backs it with
-/// the in-guest agent over vsock. Not a true TTY in the dev runtime — documented
-/// as such.
+/// Per-VM working-set metrics: what a sandbox actually costs the node right
+/// now, vs the shape it reserves. Feeds `GET /v1/sandboxes/:id/metrics` and
+/// gives measured-memory overcommit its ground truth.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct VmMetrics {
+    /// Host-resident bytes of the VM process (VmRSS): the real footprint.
+    pub host_rss_bytes: Option<u64>,
+    /// Current balloon target (MiB reclaimed from the guest), if ballooned.
+    pub balloon_target_mib: Option<u32>,
+    /// Latest guest balloon statistics (free/available memory), verbatim from
+    /// the device. None when the balloon is absent or stats are unavailable.
+    pub balloon_stats: Option<serde_json::Value>,
+    pub net: Option<NetStats>,
+}
+
+/// An interactive shell session (the `/pty` endpoint), as a pair of byte
+/// streams. The Firecracker runtime bridges a REAL in-guest TTY over vsock
+/// (stderr is merged into the terminal stream, as a TTY does); the development
+/// runtime backs it with a piped child shell, whose stderr arrives separately
+/// and whose process must be reaped when the session ends.
 pub struct PtySession {
-    pub child: Child,
-    pub stdin: ChildStdin,
-    pub stdout: ChildStdout,
-    pub stderr: ChildStderr,
+    /// Client keystrokes flow here.
+    pub input: Box<dyn AsyncWrite + Send + Unpin>,
+    /// Terminal output (the TTY stream; piped stdout in the dev runtime).
+    pub output: Box<dyn AsyncRead + Send + Unpin>,
+    /// Piped stderr (dev runtime only; a real TTY merges it into `output`).
+    pub stderr: Option<Box<dyn AsyncRead + Send + Unpin>>,
+    /// Child to kill/reap on close (dev runtime only; the vsock session ends
+    /// when the streams drop and the per-connection agent exits).
+    pub child: Option<Child>,
 }
 
 #[async_trait]
@@ -133,6 +155,40 @@ pub trait Runtime: Send + Sync {
     /// directories were removed. Default: nothing to do.
     fn gc_stale_jails(&self) -> usize {
         0
+    }
+
+    /// Periodic runtime maintenance, driven by the background warmer's tick
+    /// (e.g. keeping the pre-spawned jailer pool full). Default: nothing.
+    async fn maintain(&self) {}
+
+    /// Whether a restorable "golden" image snapshot exists for this image+shape
+    /// on this node. When true, an empty-pool create takes the
+    /// `snapshot_restore` path (~hundreds of ms) instead of a cold boot (~1.4s),
+    /// and warm VMs restored from the same artifact share its mem image's host
+    /// page cache (clean guest pages are stored once per image+shape).
+    fn golden_snapshot_available(&self, _image_key: &str, _resources: &Resources) -> bool {
+        false
+    }
+
+    /// Produce the golden snapshot for an image+shape if it is missing: boot a
+    /// throwaway VM, snapshot it, publish the artifacts, tear the VM down.
+    /// Idempotent; returns true only when a new artifact was produced. Driven by
+    /// the hot-pool warmer (it already knows which image+shapes matter).
+    async fn ensure_golden_snapshot(&self, _spec: &VmSpec) -> Result<bool> {
+        Ok(false)
+    }
+
+    /// Set the guest balloon target: `amount_mib` MiB reclaimed from the guest
+    /// back to the host (0 deflates fully). The soft-standby tier between
+    /// "running" and snapshot eviction — zero resume latency, smaller RSS.
+    /// Requires the balloon device (`runtime.balloon`) configured at boot.
+    async fn balloon(&self, _handle: &str, _amount_mib: u32) -> Result<()> {
+        anyhow::bail!("balloon device not supported by this runtime")
+    }
+
+    /// Per-VM working-set metrics. None for an unknown handle.
+    async fn vm_metrics(&self, _handle: &str) -> Option<VmMetrics> {
+        None
     }
 
     /// Pre-boot a warm microVM for a hot pool. Returns its handle.

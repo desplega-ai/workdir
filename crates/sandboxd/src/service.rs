@@ -209,9 +209,14 @@ pub async fn create_sandbox(
     // release the lock so other creates proceed concurrently with this boot.
     drop(admission_guard);
 
-    // Snapshot availability is per-shape; the reference build does not keep a
-    // curated snapshot cache, so cold boot is used when no warm VM is claimed.
-    let snapshot_available = false;
+    // Golden image snapshots: when one exists for this image+shape, an
+    // empty-pool create restores it (~hundreds of ms) instead of cold-booting
+    // (~1.4s). Volume sandboxes stay cold (drives are configured pre-boot), and
+    // only the local node can answer for its own artifacts today (worker RPC —
+    // Phase 4 — will carry this in the node heartbeat).
+    let snapshot_available = volumes.is_empty()
+        && placement.node_id == state.local_node_id
+        && state.local.golden_snapshot_available(class.key(), &resources);
     let instance = match node.place(&spec, snapshot_available).await {
         Ok(i) => i,
         Err(e) => {
@@ -389,10 +394,24 @@ async fn gather_node_snapshots(
             org_active_count,
             hot_pool_available,
             image_cached: !req.is_custom_image, // curated always cached locally
-            snapshot_available: false,
+            snapshot_available: if node.id == state.local_node_id {
+                state.local.golden_snapshot_available(&req.image_key, &req.resources)
+            } else {
+                false // remote nodes report theirs once worker RPC lands (Phase 4)
+            },
             cpu_pressure: occupancy * 0.7,
             io_pressure: occupancy * 0.5,
             custom_image_cache_pressure: 0.0,
+            // Measured-memory overcommit (opt-in): only the local node can
+            // report its own MemAvailable today; workers will carry it in their
+            // heartbeat once worker RPC lands (Phase 4).
+            measured_available_gb: if state.cfg.capacity.overcommit && node.id == state.local_node_id
+            {
+                crate::capacity::host_available_memory_gb()
+            } else {
+                None
+            },
+            overcommit_headroom_gb: state.cfg.capacity.overcommit_headroom_gb,
         });
     }
     Ok(out)

@@ -52,8 +52,13 @@ passes; the default on a non-Linux dev machine is `mock`.
 A create resolves to exactly one boot path, and the API **reports which one**:
 
 1. `hot_pool` — claim a pre-booted warm microVM matching the image+shape. Fastest.
-2. `snapshot_restore` — restore a memory+disk snapshot for the shape. Medium.
+2. `snapshot_restore` — restore the **golden image snapshot** for the
+   image+shape (produced once per shape by the warmer; restores launch like
+   fork children: fresh chroot, own tap, `network_overrides`, guest re-IP).
+   Warm-pool VMs restore from the same artifact, so all siblings' clean guest
+   pages share ONE `mem.file` host page cache. Medium latency.
 3. `cold_boot` — boot the image rootfs fresh. Slowest; pays image cache cost.
+   Volume-attached sandboxes always cold-boot (drives are configured pre-boot).
 4. `fork` — clone a sibling from a parent's live snapshot artifact (roadmap
    Phase 3, `POST /v1/sandboxes/:id/fork`). Tracks resume latency, not cold boot.
 
@@ -165,11 +170,19 @@ join, drain, scheduling decisions, capacity math) already spans the cluster.
 ## Background loops (`src/background.rs`)
 
 - **Warmer**: reconciles hot pools toward targets (base 2, node-python 1,
-  browser 1 by default).
+  browser 1 by default), produces missing golden image snapshots, and drives
+  runtime maintenance (jailer-pool refill).
 - **Idle reaper**: parks sandboxes idle past their `auto_stop_seconds` window in
   perpetual standby (snapshot + free RAM + $0, auto-resume on next request);
   secret-resident sandboxes fall back to a plain stop. Exec and preview activity
   bump `last_active_at`.
+- **Balloon reaper** (soft standby, opt-in): after `standby.balloon_idle_seconds`
+  of idleness, inflates the guest balloon so free guest memory returns to the
+  host at zero resume latency; deflates when activity returns.
+- **Pressure reaper** (opt-in): when memory PSI exceeds
+  `capacity.psi_standby_threshold`, parks the least-recently-active running
+  sandbox ahead of its idle window — the backpressure that makes
+  measured-memory overcommit (`capacity.overcommit`) safe.
 - **Heartbeat**: keeps the local node's registry entry fresh.
 
 ## Guest agent (`crates/guest-agent`)
@@ -180,3 +193,22 @@ its stdio, which the in-VM init shim bridges onto an `AF_VSOCK` port. The host
 exec, file read/write, directory listing, and HTTP readiness checks — no guest
 networking required. Keeping the transport at stdio makes the agent compile and
 unit-test on any platform.
+
+The `pty` op upgrades its connection to a REAL TTY: the agent openpty()s, runs
+the shell on the slave (setsid + TIOCSCTTY, so ^C and job control work), sends
+one Ok line, and then the connection IS the terminal byte stream. One agent
+process serves one connection (socat `fork`), so the host closing the stream
+ends the session and SIGHUPs the shell — no extra channel management.
+
+## Persistent volumes (Phase 5)
+
+A volume is an org-scoped, labelled ext4 image under `volumes_dir`, attached to
+at most one sandbox at a time (`POST /v1/sandboxes` with `volumes`) and
+surviving that sandbox's deletion. The runtime hardlinks the backing image into
+the jailer chroot (same inode — guest writes persist), attaches it as an extra
+virtio drive, and the guest mounts it by ext4 LABEL with a positional
+`/dev/vd{b+i}` fallback. Standby restores re-stage the backing files; fork is
+refused while volumes are attached (they are exclusive, and the parent's
+snapshot carries the drives). The dev runtime simulates all of this with host
+directories + symlinks, so the acceptance flow (write → delete sandbox →
+re-attach → read) genuinely round-trips.

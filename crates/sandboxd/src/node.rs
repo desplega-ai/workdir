@@ -11,8 +11,8 @@ use crate::catalog;
 use crate::hotpool::{HotPools, PoolStatus, ShapeKey};
 use crate::knobs::Resources;
 use crate::runtime::{
-    DirEntry, ExecRequest, ExecResult, PtySession, Runtime, SnapshotArtifact, VmInstance, VmSpec,
-    WarmVm,
+    DirEntry, ExecRequest, ExecResult, PtySession, Runtime, SnapshotArtifact, VmInstance, VmMetrics,
+    VmSpec, WarmVm,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -47,6 +47,18 @@ pub trait NodeClient: Send + Sync {
 
     /// Ready warm VMs matching an exact image+shape, for the scheduler input.
     async fn hot_pool_available(&self, image_key: &str, resources: &Resources) -> u32;
+
+    /// Set the guest balloon target (soft standby). Default: unsupported —
+    /// worker RPC for this lands with Phase 4.
+    async fn balloon(&self, _handle: &str, _amount_mib: u32) -> Result<()> {
+        anyhow::bail!("balloon not supported on this node client")
+    }
+
+    /// Per-VM working-set metrics. Default: unknown (remote nodes report theirs
+    /// once worker RPC lands, Phase 4).
+    async fn vm_metrics(&self, _handle: &str) -> Option<VmMetrics> {
+        None
+    }
 }
 
 pub struct LocalNode {
@@ -81,6 +93,31 @@ impl LocalNode {
     /// Warm pools toward their targets, one VM per pending shape per call.
     /// Returns how many VMs were warmed.
     pub async fn warm_once(&self) -> usize {
+        // Runtime maintenance rides the warmer tick (e.g. jailer-pool refill).
+        self.runtime.maintain().await;
+
+        // Golden snapshots first: once one exists for an image+shape, the warm
+        // VMs below restore from it (sharing its mem image's host page cache)
+        // and an empty-pool create takes `snapshot_restore` instead of a cold
+        // boot. ensure_golden_snapshot is a cheap existence check after the
+        // first production.
+        let status = { self.hotpools.lock().await.status() };
+        for st in &status {
+            if !self.runtime.image_available(&st.image_key) {
+                continue;
+            }
+            let spec = Self::pool_spec(&st.image_key, st.cpu, st.memory_mb, st.disk_gb);
+            match self.runtime.ensure_golden_snapshot(&spec).await {
+                Ok(true) => {
+                    tracing::info!(image = %st.image_key, memory_mb = st.memory_mb, "produced golden image snapshot")
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, image = %st.image_key, "golden snapshot production failed")
+                }
+            }
+        }
+
         let pending = { self.hotpools.lock().await.pending_warm() };
         let mut warmed = 0;
         for (key, _deficit) in pending {
@@ -88,25 +125,12 @@ impl LocalNode {
             if !self.runtime.image_available(&key.image_key) {
                 continue;
             }
-            let spec = VmSpec {
-                sandbox_id: crate::ids::sandbox_id(),
-                org_id: "pool".to_string(),
-                image_key: key.image_key.clone(),
-                image_ref: key.image_key.clone(),
-                resources: Resources {
-                    cpu: key.cpu_milli as f64 / 1000.0,
-                    memory_mb: key.memory_mb,
-                    disk_gb: key.disk_gb,
-                },
-                env: Default::default(),
-                secret_env: Default::default(),
-                browser: None,
-                docker: false,
-                coding_agent: None,
-                mounts: Vec::new(),
-                volumes: Vec::new(),
-                files: Vec::new(),
-            };
+            let spec = Self::pool_spec(
+                &key.image_key,
+                key.cpu_milli as f64 / 1000.0,
+                key.memory_mb,
+                key.disk_gb,
+            );
             match self.runtime.prewarm(&spec).await {
                 Ok(warm) => {
                     self.hotpools.lock().await.push(key, warm.handle);
@@ -118,6 +142,31 @@ impl LocalNode {
             }
         }
         warmed
+    }
+
+    /// A bare pool/golden spec: just the image at a shape, no tenant features.
+    fn pool_spec(image_key: &str, cpu: f64, memory_mb: u32, disk_gb: u32) -> VmSpec {
+        VmSpec {
+            sandbox_id: crate::ids::sandbox_id(),
+            org_id: "pool".to_string(),
+            image_key: image_key.to_string(),
+            image_ref: image_key.to_string(),
+            resources: Resources { cpu, memory_mb, disk_gb },
+            env: Default::default(),
+            secret_env: Default::default(),
+            browser: None,
+            docker: false,
+            coding_agent: None,
+            mounts: Vec::new(),
+            volumes: Vec::new(),
+            files: Vec::new(),
+        }
+    }
+
+    /// Whether a golden image snapshot exists locally for this image+shape
+    /// (scheduler input + the create path's snapshot_restore gate).
+    pub fn golden_snapshot_available(&self, image_key: &str, resources: &Resources) -> bool {
+        self.runtime.golden_snapshot_available(image_key, resources)
     }
 
     pub async fn open_pty(&self, handle: &str) -> Result<PtySession> {
@@ -195,5 +244,13 @@ impl NodeClient for LocalNode {
     async fn hot_pool_available(&self, image_key: &str, resources: &Resources) -> u32 {
         let key = ShapeKey::new(image_key, resources);
         self.hotpools.lock().await.available(&key)
+    }
+
+    async fn balloon(&self, handle: &str, amount_mib: u32) -> Result<()> {
+        self.runtime.balloon(handle, amount_mib).await
+    }
+
+    async fn vm_metrics(&self, handle: &str) -> Option<VmMetrics> {
+        self.runtime.vm_metrics(handle).await
     }
 }

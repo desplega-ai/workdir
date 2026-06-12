@@ -14,7 +14,8 @@ The default create is one call with no body and yields the cheapest, fastest pat
 | `GET` | `/v1/sandboxes` | List the caller's sandboxes. |
 | `GET` | `/v1/sandboxes/:id` | Get one (with timings, urls, price, uptime, cost). |
 | `POST` | `/v1/sandboxes/:id/exec` | `{cmd, cwd?, env?, background?}` → `{exit_code, stdout, stderr}`. |
-| `GET` | `/v1/sandboxes/:id/pty` | WebSocket interactive shell. |
+| `GET` | `/v1/sandboxes/:id/pty` | WebSocket interactive shell (a real in-guest TTY over vsock on Firecracker). |
+| `GET` | `/v1/sandboxes/:id/metrics` | Working-set metrics: host RSS vs reserved shape, balloon target + guest memory stats, net counters. |
 | `GET` | `/v1/sandboxes/:id/files?path=…` | Read a file → `{content, encoding}`. |
 | `PUT` | `/v1/sandboxes/:id/files` | `{path, content, encoding?}` → write. |
 | `POST` | `/v1/sandboxes/:id/ports/:port/expose` | → `{port, url}` preview route. |

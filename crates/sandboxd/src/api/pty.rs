@@ -48,13 +48,15 @@ async fn run_pty(state: AppState, handle: String, socket: WebSocket) {
             return;
         }
     };
-    let PtySession { mut child, mut stdin, stdout, stderr } = session;
+    let PtySession { mut input, output, stderr, mut child } = session;
     let (mut cl_tx, mut cl_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(128);
 
-    // Pump stdout and stderr into the client.
-    spawn_reader(stdout, out_tx.clone());
-    spawn_reader(stderr, out_tx);
+    // Pump terminal output (and the dev runtime's separate stderr) to the client.
+    spawn_reader(output, out_tx.clone());
+    if let Some(err) = stderr {
+        spawn_reader(err, out_tx);
+    }
 
     let sender = tokio::spawn(async move {
         while let Some(bytes) = out_rx.recv().await {
@@ -72,13 +74,15 @@ async fn run_pty(state: AppState, handle: String, socket: WebSocket) {
             Message::Close(_) => break,
             _ => continue,
         };
-        if stdin.write_all(&bytes).await.is_err() {
+        if input.write_all(&bytes).await.is_err() {
             break;
         }
-        let _ = stdin.flush().await;
+        let _ = input.flush().await;
     }
 
-    let _ = child.kill().await;
+    if let Some(child) = child.as_mut() {
+        let _ = child.kill().await;
+    }
     sender.abort();
 }
 

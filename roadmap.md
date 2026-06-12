@@ -109,6 +109,73 @@ Ruled out along the way (with evidence): seccomp (`--no-seccomp`, `Seccomp: 0`),
   the jailer relaunch, which a ready-Firecracker pool — not UFFD — would address);
   it remains worthwhile only for future post-copy live migration.
 
+## Landed 2026-06-12 — density, speed, volumes, PTY (mock-validated; KVM validation pending)
+
+A coordinated batch driving Phases 2/3/5 forward plus two restart-hardening
+bug fixes. Everything below is validated against the mock runtime (full
+integration suite) and compiles for Firecracker; the KVM-bound paths need one
+validation pass on the node.
+
+**Bug fixes (restart hardening):**
+- **Jail GC no longer destroys parked standby VMs after a daemon restart.**
+  Per-VM records now rehydrate EAGERLY at runtime construction (they were
+  lazy-loaded only on first restore), so `gc_stale_jails` sees parked VMs as
+  live. Before: ~5 minutes after a restart the sweeper deleted every standby
+  VM's record.json + snapshot artifacts — "perpetual" standby silently became
+  "standby until the next deploy + 5 min". Unit-tested without KVM.
+- **Tap/IP/uid collisions after a restart.** The tap/CID/restore-chroot
+  counters now resume above anything a persisted record (or surviving `-rN`
+  chroot) still holds; fresh boots could previously reuse `wdtapN` names and
+  guest IPs owned by parked VMs (`setup_tap`'s `link del` yanks a live NIC).
+  Rehydrated pids are verified against `/proc/<pid>/comm` before any kill.
+
+**Speed:**
+- **Golden image snapshots** (per image+shape, produced by the warmer): an
+  empty-pool create now takes `snapshot_restore` (~hundreds of ms) instead of a
+  ~1.4s cold boot. The old half-wired `boot(snapshot)` path (no tap, no
+  guest IP) is gone; golden restores launch like fork children
+  (`network_overrides` + guest re-IP), and `snapshot_available` is finally real
+  at both create and scheduler level.
+- **Pre-spawned jailer pool** (`runtime.jailer_pool_size`, default off): idle
+  jailer+Firecracker processes with api.sock listening; restores and golden
+  boots claim one and skip the ~30ms relaunch — the measured resume floor.
+- **Quiet guest boot** (`quiet loglevel=1`, default on) and exponential-backoff
+  polling (1→20ms) replacing fixed 10/20ms sleeps on every boot/restore wait.
+- **provision-node.sh** can now stand up an XFS `reflink=1` data filesystem
+  (`DATA_FS_DEVICE=...`) and warns when the data dir cannot reflink — on ext4,
+  fork pays full multi-GB copies (~58s measured); on reflink it is instant CoW.
+
+**Density:**
+- **Restore-based warm pool:** warm VMs restore from the golden snapshot, so
+  every sibling's clean guest pages are backed by the SAME `mem.file` host page
+  cache — N warm VMs ≈ one memory image + dirty deltas.
+- **Measured-memory overcommit** (`[capacity] overcommit`, opt-in): admission
+  may pass the static shape-sum ceiling while the host still measures
+  `overcommit_headroom_gb` of `MemAvailable` beyond the request. Backpressure:
+  the **PSI pressure reaper** (`psi_standby_threshold`) parks the least-recently-
+  active sandbox ahead of its idle window when memory PSI spikes.
+- **virtio-balloon soft standby** (`runtime.balloon` +
+  `standby.balloon_idle_seconds`): the tier between running and snapshot
+  eviction — idle guests hand free memory back to the host at zero resume
+  latency; deflated when activity returns. Balloon stats feed the new metrics.
+- `[capacity] host_reserve_gb` / `practical_derate` are config knobs now (the
+  spec defaults predate shared rootfs + standby; measure, then tighten).
+
+**Features:**
+- **Persistent volumes (Phase 5) wired end to end:** labelled ext4 backing
+  images attached as extra virtio drives (hardlinked into the chroot — guest
+  writes land on the one persistent inode), mounted by label in the guest,
+  re-staged across standby/restore, exclusive-attach enforced, detach on
+  delete, fork refused while attached. Integration-tested (write → delete →
+  re-attach → read back).
+- **PTY over vsock:** `GET /v1/sandboxes/:id/pty` now bridges a REAL in-guest
+  TTY on Firecracker (guest-agent `pty` op: openpty + shell on the slave,
+  setsid + TIOCSCTTY; the per-connection agent process makes the stream the
+  session). `PtySession` became stream-based; the dev runtime still serves the
+  same API with a piped shell.
+- **Per-VM working-set metrics:** `GET /v1/sandboxes/:id/metrics` — host VmRSS
+  (ground truth vs reserved shape), balloon target + guest stats, net counters.
+
 ## Phases
 
 ### Phase 0 — Measure (days) — ✅ landed

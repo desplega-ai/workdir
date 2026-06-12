@@ -38,6 +38,12 @@ pub struct NodeSnapshot {
     pub cpu_pressure: f64,
     pub io_pressure: f64,
     pub custom_image_cache_pressure: f64,
+    /// Measured host memory still available (`MemAvailable`), when the node
+    /// reports it and overcommit is enabled. None = static admission only.
+    pub measured_available_gb: Option<f64>,
+    /// Minimum measured headroom (GB) kept free when admitting past the static
+    /// ceiling. <= 0 disables measured admission.
+    pub overcommit_headroom_gb: f64,
 }
 
 impl NodeSnapshot {
@@ -48,7 +54,20 @@ impl NodeSnapshot {
     }
 
     fn fits(&self, req: &Resources) -> bool {
-        self.used_memory_gb + req.memory_gb() <= self.admission_ceiling_gb() + 1e-9
+        if self.used_memory_gb + req.memory_gb() <= self.admission_ceiling_gb() + 1e-9 {
+            return true;
+        }
+        // Measured-memory overcommit (opt-in): the static ceiling sums shapes,
+        // but guests fault pages lazily and idle sandboxes are parked at $0, so
+        // shape sums badly overstate real usage. Admit past the ceiling while
+        // the HOST still measures enough free memory beyond a safety headroom —
+        // the PSI standby reaper is the backpressure that keeps this safe.
+        match self.measured_available_gb {
+            Some(avail) if self.overcommit_headroom_gb > 0.0 => {
+                avail - req.memory_gb() >= self.overcommit_headroom_gb
+            }
+            _ => false,
+        }
     }
 
     fn free_ratio_after(&self, req: &Resources) -> f64 {
@@ -202,6 +221,8 @@ mod tests {
             cpu_pressure: 0.0,
             io_pressure: 0.0,
             custom_image_cache_pressure: 0.0,
+            measured_available_gb: None,
+            overcommit_headroom_gb: 0.0,
         }
     }
 
@@ -249,5 +270,40 @@ mod tests {
         a.org_active_count = 5; // org already crowded on a
         let p = select(&base_req(), &[a, b]).unwrap();
         assert_eq!(p.node_id, "b");
+    }
+
+    #[test]
+    fn overcommit_admits_past_static_ceiling_on_measured_headroom() {
+        // At the 20-unit static ceiling, but the host MEASURES 30 GB available:
+        // with overcommit enabled the request is admitted (real usage is far
+        // below the shape sum — lazy faulting + parked standby).
+        let mut a = snap(node("a", 64.0));
+        a.used_memory_gb = 40.0;
+        a.measured_available_gb = Some(30.0);
+        a.overcommit_headroom_gb = 8.0;
+        let p = select(&base_req(), &[a]).unwrap();
+        assert_eq!(p.node_id, "a");
+    }
+
+    #[test]
+    fn overcommit_still_refuses_inside_the_headroom() {
+        // Measured availability minus the request must clear the headroom:
+        // 9.5 GB available - 2 GB request < 8 GB headroom → refuse.
+        let mut a = snap(node("a", 64.0));
+        a.used_memory_gb = 40.0;
+        a.measured_available_gb = Some(9.5);
+        a.overcommit_headroom_gb = 8.0;
+        let err = select(&base_req(), &[a]).unwrap_err();
+        assert_eq!(err.reason, "memory_admission");
+    }
+
+    #[test]
+    fn overcommit_off_keeps_static_admission() {
+        let mut a = snap(node("a", 64.0));
+        a.used_memory_gb = 40.0;
+        a.measured_available_gb = Some(30.0);
+        a.overcommit_headroom_gb = 0.0; // disabled
+        let err = select(&base_req(), &[a]).unwrap_err();
+        assert_eq!(err.reason, "memory_admission");
     }
 }

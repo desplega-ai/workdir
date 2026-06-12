@@ -30,6 +30,7 @@ pub fn router(state: AppState) -> Router {
         .route("/sandboxes", post(sandboxes::create).get(sandboxes::list))
         .route("/sandboxes/:id", get(sandboxes::get).delete(sandboxes::delete))
         .route("/sandboxes/:id/exec", post(sandboxes::exec))
+        .route("/sandboxes/:id/metrics", get(sandboxes::metrics))
         .route("/sandboxes/:id/pty", get(pty::pty_ws))
         .route("/sandboxes/:id/files", get(sandboxes::read_file).put(sandboxes::write_file))
         .route("/sandboxes/:id/ports/:port/expose", post(sandboxes::expose_port))

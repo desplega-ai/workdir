@@ -31,6 +31,7 @@ fn test_config(data: &std::path::Path) -> Config {
     cfg.runtime.kind = "mock".into();
     cfg.runtime.workspace_dir = data.join("workspaces");
     cfg.runtime.images_dir = data.join("images");
+    cfg.runtime.volumes_dir = data.join("volumes");
     cfg.runtime.kernel_image = data.join("kernel/vmlinux").to_string_lossy().to_string();
     cfg.auth.bootstrap_admin_key = "sk_live_test".into();
     cfg
@@ -596,4 +597,138 @@ async fn benchmark_sweep_covers_all_curated_images() {
         .filter_map(|s| s["boot_path"].as_str())
         .collect();
     assert!(browser_paths.contains("cold_boot") && browser_paths.contains("snapshot_restore"));
+}
+
+#[tokio::test]
+async fn volumes_persist_across_sandboxes_and_attach_exclusively() {
+    // Roadmap Phase 5: a persistent volume outlives the sandbox it was attached
+    // to, attaches to at most one sandbox at a time, and refuses deletion while
+    // attached.
+    let (base, key, _tmp) = spawn_server().await;
+    let c = client();
+    let auth = format!("Bearer {key}");
+
+    // Create a volume.
+    let resp = c
+        .post(format!("{base}/v1/volumes"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"name": "data", "size_gb": 5}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 201);
+    let vol: serde_json::Value = resp.json().await.unwrap();
+    let vol_id = vol["id"].as_str().unwrap().to_string();
+
+    // Arbitrary sizes are rejected (constrained knobs, like resources).
+    let resp = c
+        .post(format!("{base}/v1/volumes"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"name": "odd", "size_gb": 7}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Attach it to a sandbox and write through the mount path.
+    let resp = c
+        .post(format!("{base}/v1/sandboxes"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"volumes": [{"volume_id": vol_id, "mount_path": "/data"}]}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 201);
+    let sb: serde_json::Value = resp.json().await.unwrap();
+    let id = sb["id"].as_str().unwrap().to_string();
+    let exec: serde_json::Value = c
+        .post(format!("{base}/v1/sandboxes/{id}/exec"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"cmd": "echo persisted > data/state.txt"}))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(exec["exit_code"], 0, "write into the volume: {exec}");
+
+    // Exclusive: a second sandbox cannot attach the same volume while held.
+    let resp = c
+        .post(format!("{base}/v1/sandboxes"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"volumes": [{"volume_id": vol_id, "mount_path": "/data"}]}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 409, "double-attach must conflict");
+
+    // Deleting the volume while attached is refused.
+    let resp = c
+        .delete(format!("{base}/v1/volumes/{vol_id}"))
+        .header("authorization", &auth)
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 409, "delete while attached must conflict");
+
+    // Delete the sandbox; the volume detaches but its data survives.
+    let resp = c
+        .delete(format!("{base}/v1/sandboxes/{id}"))
+        .header("authorization", &auth)
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let vol: serde_json::Value = c
+        .get(format!("{base}/v1/volumes/{vol_id}"))
+        .header("authorization", &auth)
+        .send().await.unwrap().json().await.unwrap();
+    assert!(vol["attached_to"].is_null(), "volume must detach on sandbox delete: {vol}");
+
+    // A new sandbox re-attaches the volume and reads the data back.
+    let resp = c
+        .post(format!("{base}/v1/sandboxes"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"volumes": [{"volume_id": vol_id, "mount_path": "/data"}]}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 201);
+    let sb2: serde_json::Value = resp.json().await.unwrap();
+    let id2 = sb2["id"].as_str().unwrap().to_string();
+    let exec: serde_json::Value = c
+        .post(format!("{base}/v1/sandboxes/{id2}/exec"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"cmd": "cat data/state.txt"}))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(exec["exit_code"], 0);
+    assert!(
+        exec["stdout"].as_str().unwrap_or("").contains("persisted"),
+        "volume data must survive across sandboxes: {exec}"
+    );
+
+    // A volume-attached sandbox cannot be forked (volumes are exclusive).
+    let resp = c
+        .post(format!("{base}/v1/sandboxes/{id2}/fork"))
+        .header("authorization", &auth)
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 409, "fork with attached volumes must conflict");
+
+    // Detached volume deletes cleanly.
+    c.delete(format!("{base}/v1/sandboxes/{id2}"))
+        .header("authorization", &auth)
+        .send().await.unwrap();
+    let resp = c
+        .delete(format!("{base}/v1/volumes/{vol_id}"))
+        .header("authorization", &auth)
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn empty_pool_create_restores_from_golden_snapshot() {
+    // Golden image snapshots: the warmer produces one artifact per pooled
+    // image+shape; once the warm pool is drained, the next create must take the
+    // snapshot_restore path (~hundreds of ms) instead of a cold boot (~1.5s).
+    let (base, key, _tmp) = spawn_server().await;
+    let c = client();
+    let auth = format!("Bearer {key}");
+
+    let mut paths = vec![];
+    for _ in 0..3 {
+        let sb: serde_json::Value = c
+            .post(format!("{base}/v1/sandboxes"))
+            .header("authorization", &auth)
+            .send().await.unwrap().json().await.unwrap();
+        paths.push(sb["boot_path"].as_str().unwrap_or("?").to_string());
+    }
+    // The base pool target is 2: two hot claims, then the golden restore.
+    assert_eq!(paths[0], "hot_pool");
+    assert_eq!(paths[1], "hot_pool");
+    assert_eq!(
+        paths[2], "snapshot_restore",
+        "an empty-pool create with a golden snapshot must restore, not cold boot: {paths:?}"
+    );
 }

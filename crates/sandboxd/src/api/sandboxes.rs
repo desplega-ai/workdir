@@ -57,6 +57,32 @@ pub async fn delete(
     Ok(Json(json!({ "id": id, "deleted": true })))
 }
 
+/// Per-sandbox working-set metrics: host-resident bytes (the real footprint vs
+/// the reserved shape), balloon target + guest memory stats when the balloon
+/// device is enabled, and network byte counters.
+pub async fn metrics(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let sb = load_owned(&state, &ctx, &id)?;
+    let node = state.node_for(sb.node_id.as_deref().unwrap_or(""));
+    let metrics = match &sb.runtime_handle {
+        Some(h) => node.vm_metrics(h).await,
+        None => None,
+    };
+    Ok(Json(json!({
+        "sandbox_id": sb.id,
+        "state": sb.state.as_str(),
+        "reserved": {
+            "cpu": sb.resources.cpu,
+            "memory_mb": sb.resources.memory_mb,
+            "disk_gb": sb.resources.disk_gb,
+        },
+        "metrics": metrics,
+    })))
+}
+
 #[derive(Deserialize)]
 pub struct ExecBody {
     pub cmd: String,

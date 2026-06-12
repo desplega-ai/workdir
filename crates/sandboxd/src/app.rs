@@ -66,6 +66,8 @@ async fn serve(cfg: Config) -> Result<()> {
 
     background::spawn_warmer(state.clone());
     background::spawn_idle_reaper(state.clone());
+    background::spawn_pressure_reaper(state.clone());
+    background::spawn_balloon_reaper(state.clone());
     background::spawn_credit_enforcer(state.clone());
     background::spawn_image_gc(state.clone());
     background::spawn_jail_gc(state.clone());
@@ -89,6 +91,12 @@ pub async fn build_state(cfg: Config) -> Result<crate::state::AppState> {
     std::fs::create_dir_all(&cfg.runtime.workspace_dir).ok();
     std::fs::create_dir_all(&cfg.runtime.images_dir).ok();
     std::fs::create_dir_all(&cfg.runtime.volumes_dir).ok();
+    // Capacity tuning is read by model code (Node::capacity) far from any
+    // config plumbing; install it once before anything derives capacity.
+    crate::capacity::set_tuning(crate::capacity::CapacityTuning {
+        host_reserve_gb: cfg.capacity.host_reserve_gb,
+        practical_derate: cfg.capacity.practical_derate,
+    });
     let store = Store::open(&cfg.db_path()).context("open store")?;
 
     // Bootstrap the admin org + key; print the key once if freshly generated.

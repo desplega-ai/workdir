@@ -13,3 +13,5 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# openpty + TIOCSCTTY for the interactive PTY op (unix-only code path).
+libc = "0.2"

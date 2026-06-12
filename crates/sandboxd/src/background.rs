@@ -72,6 +72,113 @@ pub fn spawn_idle_reaper(state: AppState) {
     });
 }
 
+/// Soft standby (the tier between "running" and snapshot eviction): after
+/// `standby.balloon_idle_seconds` of idleness, inflate the guest balloon so
+/// free guest memory returns to the host — the sandbox stays hot (zero resume
+/// latency) at a fraction of its RSS. Deflated again once activity returns
+/// (checked each tick; `deflate_on_oom` already lets the guest reclaim pages
+/// under its own pressure in the meantime). No-op unless `runtime.balloon` is
+/// on and the window is non-zero.
+pub fn spawn_balloon_reaper(state: AppState) {
+    tokio::spawn(async move {
+        let idle_s = state.cfg.standby.balloon_idle_seconds;
+        if idle_s == 0 || !state.cfg.runtime.balloon {
+            return;
+        }
+        // Sandboxes this loop has ballooned and not yet deflated.
+        let mut ballooned: std::collections::HashSet<String> = Default::default();
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let active = match state.store.all_active_sandboxes() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let now = Utc::now();
+            for sb in &active {
+                if sb.state != State::Running {
+                    ballooned.remove(&sb.id);
+                    continue;
+                }
+                let handle = match &sb.runtime_handle {
+                    Some(h) => h.clone(),
+                    None => continue,
+                };
+                let idle = (now - sb.last_active_at).num_seconds();
+                let node = state.node_for(sb.node_id.as_deref().unwrap_or(""));
+                if idle >= idle_s as i64 && !ballooned.contains(&sb.id) {
+                    // Reclaim everything above a small working floor; the guest
+                    // keeps what it actually needs (deflate_on_oom).
+                    let target = sb.resources.memory_mb.saturating_sub(384);
+                    match node.balloon(&handle, target).await {
+                        Ok(()) => {
+                            tracing::info!(sandbox = %sb.id, target_mib = target, idle_s = idle, "soft standby: balloon inflated");
+                            ballooned.insert(sb.id.clone());
+                        }
+                        Err(e) => tracing::debug!(error = %e, sandbox = %sb.id, "balloon inflate failed"),
+                    }
+                } else if idle < idle_s as i64 && ballooned.contains(&sb.id) {
+                    match node.balloon(&handle, 0).await {
+                        Ok(()) => {
+                            tracing::info!(sandbox = %sb.id, "activity returned: balloon deflated");
+                            ballooned.remove(&sb.id);
+                        }
+                        Err(e) => tracing::debug!(error = %e, sandbox = %sb.id, "balloon deflate failed"),
+                    }
+                }
+            }
+            ballooned.retain(|id| active.iter().any(|s| &s.id == id));
+        }
+    });
+}
+
+/// Under measured memory pressure, park the least-recently-active running
+/// sandbox in standby AHEAD of its idle window. This is the backpressure that
+/// makes measured-memory overcommit (`[capacity] overcommit`) safe: admission
+/// can run past the static shape-sum ceiling because pressure sheds the
+/// longest-idle guests first, at $0 and transparently resumable. No-op unless
+/// `[capacity] psi_standby_threshold > 0` and `[standby] enabled` (and PSI is
+/// only available on Linux).
+pub fn spawn_pressure_reaper(state: AppState) {
+    tokio::spawn(async move {
+        let threshold = state.cfg.capacity.psi_standby_threshold;
+        if threshold <= 0.0 || !state.cfg.standby.enabled {
+            return;
+        }
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let Some(avg10) = crate::capacity::memory_pressure_avg10() else { continue };
+            if avg10 < threshold {
+                continue;
+            }
+            let active = match state.store.all_active_sandboxes() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            // One victim per tick: standby itself relieves pressure, so let the
+            // next reading decide whether more shedding is needed.
+            let Some(victim) = pick_pressure_victim(&active) else { continue };
+            tracing::warn!(
+                avg10,
+                threshold,
+                sandbox = %victim.id,
+                "memory pressure — parking least-recently-active sandbox in standby"
+            );
+            if let Err(e) = service::standby_sandbox(&state, victim.clone()).await {
+                tracing::warn!(error = %e, sandbox = %victim.id, "pressure standby failed");
+            }
+        }
+    });
+}
+
+/// The least-recently-active RUNNING sandbox without resident secrets (secrets
+/// are never snapshotted, so those fall through to the normal idle stop).
+fn pick_pressure_victim(active: &[crate::model::Sandbox]) -> Option<&crate::model::Sandbox> {
+    active
+        .iter()
+        .filter(|s| s.state == State::Running && s.secret_names.is_empty())
+        .min_by_key(|s| s.last_active_at)
+}
+
 /// Stop sandboxes for orgs whose real-time balance has hit zero. Persisted
 /// `spent_usd` only updates when an interval closes, so without this a
 /// long-running sandbox bills indefinitely past the org's prepaid credit

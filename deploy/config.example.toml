@@ -25,6 +25,10 @@ jailer_bin = "/usr/local/bin/jailer"
 kernel_image = ""             # defaults to <data_dir>/kernel/vmlinux
 images_dir = ""               # defaults to <data_dir>/images
 workspace_dir = ""            # defaults to <data_dir>/workspaces
+volumes_dir = ""              # defaults to <data_dir>/volumes (persistent volumes)
+quiet_guest_boot = true       # skip serial boot logging (faster cold boot)
+jailer_pool_size = 0          # pre-spawned jailers for sub-resume-floor restores (0 = off)
+balloon = false               # virtio-balloon: soft standby + guest memory stats
 
 [pricing]
 # Worked example for a ~EUR 44/month, 64 GB Hetzner EX44 node.
@@ -43,6 +47,17 @@ custom = 1.2
 enabled = true
 warm_interval_seconds = 5
 base_target = 2               # keep 2 base sandboxes ready (spec §25.1)
+
+[standby]
+enabled = false               # perpetual standby (validate on the node first)
+balloon_idle_seconds = 0      # soft-standby balloon window (0 = off; needs runtime.balloon)
+
+[capacity]
+host_reserve_gb = 12.0        # host memory never sold (spec §9.1)
+practical_derate = 0.7692     # fraction of theoretical slots admitted statically
+overcommit = false            # admit on measured MemAvailable past the static ceiling
+overcommit_headroom_gb = 8.0  # measured free memory always kept in reserve
+psi_standby_threshold = 0.0   # memory PSI avg10 (%) that triggers early standby (0 = off)
 
 [auth]
 bootstrap_admin_key = ""      # set for reproducible installs; else generated once

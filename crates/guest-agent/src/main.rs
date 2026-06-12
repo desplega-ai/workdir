@@ -22,6 +22,11 @@ enum Request {
     ReadFile { path: String },
     ListDir { path: String },
     ReadyHttp { url: String, timeout_seconds: u64 },
+    /// Streaming op: after a single Ok response line, this connection becomes
+    /// the raw byte stream of a real TTY (openpty + shell on the slave side).
+    /// One agent process serves one connection (socat fork), so the session
+    /// ends — and the shell gets SIGHUP — when the host closes the stream.
+    Pty { cols: Option<u16>, rows: Option<u16>, cmd: Option<String> },
 }
 
 #[derive(Serialize)]
@@ -33,6 +38,8 @@ enum Response {
 
 fn handle(req: Request) -> Response {
     match req {
+        // Pty is handled in main() — it takes over the whole connection.
+        Request::Pty { .. } => Response::Error { message: "pty must be the first and only request on its connection".into() },
         Request::Ping => Response::Ok { result: serde_json::json!({"agent": "ready"}) },
         Request::Exec { cmd, cwd, env, background } => exec(cmd, cwd, env, background.unwrap_or(false)),
         Request::WriteFile { path, content_b64 } => write_file(path, content_b64),
@@ -197,10 +204,139 @@ fn main() {
             continue;
         }
         let resp = match serde_json::from_str::<Request>(&line) {
+            Ok(Request::Pty { cols, rows, cmd }) => {
+                // Set the TTY up FIRST so a failure is reported as a normal
+                // error response; only then acknowledge and switch this
+                // connection to the raw byte stream.
+                match pty::spawn(cols.unwrap_or(120), rows.unwrap_or(32), cmd) {
+                    Ok(session) => {
+                        let ack = Response::Ok { result: serde_json::json!({"pty": true}) };
+                        let _ = writeln!(stdout, "{}", serde_json::to_string(&ack).unwrap());
+                        let _ = stdout.flush();
+                        let code = pty::bridge(session);
+                        std::process::exit(code);
+                    }
+                    Err(e) => Response::Error { message: format!("pty: {e}") },
+                }
+            }
             Ok(req) => handle(req),
             Err(e) => Response::Error { message: format!("bad request: {e}") },
         };
         let _ = writeln!(stdout, "{}", serde_json::to_string(&resp).unwrap());
         let _ = stdout.flush();
+    }
+}
+
+/// Real-TTY support for the `pty` op: allocate a pseudo-terminal, run the
+/// shell on its slave side, and pump bytes between this process's stdio (the
+/// vsock connection, via the init shim) and the master side.
+#[cfg(unix)]
+mod pty {
+    use std::io::{Read, Write};
+    use std::os::unix::io::FromRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command, Stdio};
+
+    pub struct Session {
+        child: Child,
+        /// PTY master, duplicated for the two pump directions.
+        master_read: std::fs::File,
+        master_write: std::fs::File,
+    }
+
+    pub fn spawn(cols: u16, rows: u16, cmd: Option<String>) -> Result<Session, String> {
+        let mut master: libc::c_int = -1;
+        let mut slave: libc::c_int = -1;
+        let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+        let rc = unsafe {
+            libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws)
+        };
+        if rc != 0 {
+            return Err(format!("openpty failed: {}", std::io::Error::last_os_error()));
+        }
+
+        let mut c = match &cmd {
+            Some(cmd) => {
+                let mut c = Command::new("/bin/sh");
+                c.args(["-lc", cmd]);
+                c
+            }
+            None => {
+                let mut c = Command::new("/bin/sh");
+                c.arg("-l"); // interactive: stdin IS a tty
+                c
+            }
+        };
+        c.current_dir("/workspace");
+        c.env("TERM", "xterm-256color");
+        unsafe {
+            c.stdin(Stdio::from_raw_fd(libc::dup(slave)));
+            c.stdout(Stdio::from_raw_fd(libc::dup(slave)));
+            c.stderr(Stdio::from_raw_fd(libc::dup(slave)));
+            c.pre_exec(|| {
+                // New session with the PTY slave (now fd 0) as controlling TTY,
+                // so ^C and job control reach the shell.
+                libc::setsid();
+                libc::ioctl(0, libc::TIOCSCTTY as _, 0);
+                Ok(())
+            });
+        }
+        let child = c.spawn().map_err(|e| format!("spawn shell: {e}"))?;
+        unsafe { libc::close(slave) };
+        let (master_read, master_write) = unsafe {
+            (std::fs::File::from_raw_fd(libc::dup(master)), std::fs::File::from_raw_fd(master))
+        };
+        Ok(Session { child, master_read, master_write })
+    }
+
+    /// Pump stdio ↔ master until the shell exits or the host closes the
+    /// connection (stdin EOF → SIGHUP to the shell, like a closed terminal).
+    /// Returns the process exit code to use.
+    pub fn bridge(mut session: Session) -> i32 {
+        let pid = session.child.id() as libc::pid_t;
+        let mut master_write = session.master_write;
+        std::thread::spawn(move || {
+            let mut stdin = std::io::stdin();
+            let mut buf = [0u8; 4096];
+            loop {
+                match stdin.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if master_write.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                        let _ = master_write.flush();
+                    }
+                }
+            }
+            unsafe { libc::kill(pid, libc::SIGHUP) };
+        });
+        let mut master_read = session.master_read;
+        let mut stdout = std::io::stdout();
+        let mut buf = [0u8; 4096];
+        loop {
+            match master_read.read(&mut buf) {
+                // EIO/EOF on the master means the slave side (shell) is gone.
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if stdout.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                    let _ = stdout.flush();
+                }
+            }
+        }
+        session.child.wait().ok().and_then(|st| st.code()).unwrap_or(0)
+    }
+}
+
+#[cfg(not(unix))]
+mod pty {
+    pub struct Session;
+    pub fn spawn(_cols: u16, _rows: u16, _cmd: Option<String>) -> Result<Session, String> {
+        Err("pty is only supported on unix guests".into())
+    }
+    pub fn bridge(_s: Session) -> i32 {
+        1
     }
 }

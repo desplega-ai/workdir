@@ -616,6 +616,7 @@ dependencies = [
 name = "guest-agent"
 version = "1.0.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
 ]

@@ -50,11 +50,46 @@ if ! command -v firecracker >/dev/null 2>&1; then
 fi
 log "  $(firecracker --version | head -1)"
 
+# --- 1.5 data filesystem (optional but strongly recommended) ----------------
+# Reflink copies (cp --reflink) are what make fork, golden-snapshot staging and
+# per-VM rootfs copies instant CoW instead of multi-GB I/O — measured on the
+# node: fork drops from ~58s (full 2 GB mem + 4 GB rootfs copies on ext4) to
+# roughly resume latency. Set DATA_FS_DEVICE=/dev/nvmeXnY (an EMPTY partition
+# or device) to format it XFS with reflink and mount it at $DATA_DIR.
+if [ -n "${DATA_FS_DEVICE:-}" ]; then
+  log "data filesystem: XFS (reflink=1) on ${DATA_FS_DEVICE} -> ${DATA_DIR}"
+  command -v mkfs.xfs >/dev/null 2>&1 || apt-get install -y -qq xfsprogs >/dev/null
+  if ! blkid "$DATA_FS_DEVICE" >/dev/null 2>&1; then
+    mkfs.xfs -f -m reflink=1 "$DATA_FS_DEVICE"
+  else
+    log "  ${DATA_FS_DEVICE} already has a filesystem; NOT reformatting"
+  fi
+  mkdir -p "$DATA_DIR"
+  if ! mountpoint -q "$DATA_DIR"; then
+    mount "$DATA_FS_DEVICE" "$DATA_DIR"
+  fi
+  grep -q "$DATA_FS_DEVICE $DATA_DIR" /etc/fstab || \
+    echo "$DATA_FS_DEVICE $DATA_DIR xfs defaults,noatime 0 2" >> /etc/fstab
+fi
+
 # --- 2. system user + dirs -------------------------------------------------
 log "user + directories"
 id -u workdir >/dev/null 2>&1 || useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin workdir
-install -d -o workdir -g workdir "$DATA_DIR" "$DATA_DIR/kernel" "$DATA_DIR/images" "$DATA_DIR/workspaces" /etc/workdir
+install -d -o workdir -g workdir "$DATA_DIR" "$DATA_DIR/kernel" "$DATA_DIR/images" "$DATA_DIR/workspaces" "$DATA_DIR/volumes" /etc/workdir
 usermod -aG kvm workdir
+
+# Warn loudly when the workspaces fs cannot reflink: every fork/golden staging
+# then pays full multi-GB copies (the measured ~58s fork on the ext4 node).
+probe="$DATA_DIR/.reflink-probe"
+echo x > "$probe.src"
+if cp --reflink=always "$probe.src" "$probe.dst" 2>/dev/null; then
+  log "  reflink OK: fork/golden staging will be instant CoW"
+else
+  log "  WARNING: $DATA_DIR cannot reflink (ext4?). Forks and golden-snapshot"
+  log "  staging pay full multi-GB copies. Re-run with DATA_FS_DEVICE=<empty"
+  log "  partition> to mount an XFS (reflink) volume here."
+fi
+rm -f "$probe.src" "$probe.dst"
 
 # --- 3. guest kernel -------------------------------------------------------
 if [ ! -s "$DATA_DIR/kernel/vmlinux" ]; then
