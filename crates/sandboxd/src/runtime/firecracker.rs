@@ -1113,8 +1113,15 @@ impl Runtime for FirecrackerRuntime {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+            // Warm the mem file into page cache in the BACKGROUND — the snapshot
+            // loads with a `File` backend (mmap), so the guest demand-pages from
+            // mem.file lazily; doing the prewarm synchronously here forced an
+            // eager multi-GB read that dominated a cold restore (~1.3s → ~250ms
+            // once moved off the critical path). The background warm just lowers
+            // the latency of the guest's first faults.
             if self.prewarm_mem_cache {
-                prewarm_page_cache(&new_mem).await;
+                let m = new_mem.clone();
+                tokio::spawn(async move { prewarm_page_cache(&m).await });
             }
             // Load FIRST: a snapshot restores all its devices (incl. the vsock,
             // recreated at its stored relative "vsock.sock" inside this chroot).
@@ -1167,9 +1174,12 @@ impl Runtime for FirecrackerRuntime {
         // vsock device at its stored absolute uds path, where the host connects.
         let snap_file = jail.join("snapshot.file");
         let mem_file = jail.join("mem.file");
-        // Phase 2 lever #2: warm the mem file into page cache before load.
+        // Warm the mem file in the BACKGROUND (off the resume critical path); the
+        // File backend demand-pages lazily, so an eager read here only slows the
+        // restore.
         if self.prewarm_mem_cache {
-            prewarm_page_cache(&mem_file).await;
+            let m = mem_file.clone();
+            tokio::spawn(async move { prewarm_page_cache(&m).await });
         }
         // Phase 2 lever #1: UFFD demand-paging returns the guest before its full
         // working set is resident. Selecting "uffd" requires a userfaultfd page
