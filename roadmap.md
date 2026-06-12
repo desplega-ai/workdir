@@ -31,9 +31,8 @@ The named gaps (updated as phases 0–3 landed):
   through the `RemoteNodeClient` + `/internal` RPC for when it lands.)
 - Browser/VNC desktops, worker RPC, and the jailer are **prototyped on
   `feat/browser-jailer-multinode`**, not on `main`.
-- ~~No fork/clone or in-RAM shared-page rootfs.~~ **Fork done (Phase 3);** in-RAM
-  shared rootfs plumbed behind `runtime.shared_rootfs` (guest EROFS image build
-  remaining). No persistent volumes yet.
+- ~~No fork/clone or in-RAM shared-page rootfs.~~ **Fork + in-RAM shared rootfs
+  done (Phase 3), both LIVE on the node.** No persistent volumes yet.
 - Running on a single dev-grade node (~20 units).
 
 The gap is specific, not a rewrite. We own the hard primitives; what remains is
@@ -199,18 +198,33 @@ a real node. Diff snapshots (lever #3) and smaller base VMs (lever #5) remain.
 
 **Target:** 3–5× density per node; fork latency ≤ resume latency.
 
-**Status:** fork ✅ landed; shared-rootfs density plumbed, KVM-bound to validate.
+**Status:** fork ✅ and in-RAM shared rootfs ✅ — both validated on the KVM node.
+
 `POST /v1/sandboxes/:id/fork` clones a sibling from the parent's live snapshot
 into a new sandbox (`boot_path: "fork"`, own id/billing, fresh tap/IP, colocated
 on the parent's node). Validated end to end against the mock runtime
-(`fork_clones_an_instant_sibling`: child inherits the parent's disk, the two are
-independent, deleting the child leaves the parent running). The Firecracker fork
-(snapshot parent → copy artifacts → load with a repointed NIC → re-IP the guest)
-compiles and is correct by review; needs a KVM host to measure. **In-RAM rootfs**
-is plumbed behind `runtime.shared_rootfs`: the host attaches one read-only base
-rootfs (no per-VM copy; shared page cache, DAX-mappable) and signals the guest to
-layer tmpfs+overlayfs. The guest-side EROFS image build + overlay mount in
-`sandbox-init` is the remaining image-side increment (see `deploy/images`).
+(`fork_clones_an_instant_sibling`) **and on the node**: the jailer-aware fork
+snapshots the parent, relaunches the child under the jailer in a fresh chroot,
+loads the snapshot with `network_overrides` repointing eth0 at the child's tap
+(the parent still holds the original, so reopening it would hit EBUSY), then
+re-IPs the guest and re-adds its default route. The child inherits the parent's
+disk, has its own IP/egress/DNS, and is fully independent (parent survives the
+child's writes and deletion). Fork wall time is ~58s on the node, dominated by
+the parent Full snapshot + a 2 GB mem copy — the workspaces fs is ext4 (no
+reflink), so the copies are real I/O; a reflink-capable fs or a UFFD CoW scheme
+would make it instant.
+
+**In-RAM shared rootfs** (`runtime.shared_rootfs = true`, live on the node):
+every base VM **hardlinks** the one read-only base `rootfs.ext4` into its jailer
+chroot — a single inode, so the host page cache holds **one** copy shared across
+all sandboxes (verified: N base VMs all reference the same inode; no per-VM 4 GB
+copy). The guest `sandbox-init` mounts that base read-only, layers a per-VM
+tmpfs, and `pivot_root`s into a writable overlayfs merged root (`wd.overlay=tmpfs`);
+writes land in RAM, reads share the cached base. pivot_root adds negligible boot
+latency (hot-pool boot still ~0 ms). The guest kernel has overlayfs + squashfs
+but **not** erofs, so true erofs+DAX (guest pages mapped straight from host RAM,
+zero guest-side duplication) remains a guest-kernel rebuild — the ext4-ro +
+overlay path already delivers the shared-page-cache density today.
 
 ### Phase 4 — Scale out: worker RPC (3–6 weeks)
 
