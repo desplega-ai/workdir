@@ -189,6 +189,11 @@ impl Runtime for MockRuntime {
             // Simulate the mount by creating its directory under the workspace.
             let _ = self.write_file(&handle, &format!("{}/.s3-mount-{}", m.mount_path, m.bucket), b"mounted (dev simulation)").await;
         }
+        // Persistent volumes: a failed attach fails the boot — silently booting
+        // without the volume would let writes land in the ephemeral workspace.
+        for v in &spec.volumes {
+            self.attach_volume(&handle, v)?;
+        }
         self.state
             .lock()
             .unwrap()
@@ -404,6 +409,22 @@ impl Runtime for MockRuntime {
     async fn delete(&self, handle: &str) -> Result<()> {
         self.state.lock().unwrap().remove(handle);
         self.workspaces.remove(handle)?;
+        Ok(())
+    }
+
+    async fn create_volume(&self, volume_id: &str, _size_gb: u32) -> Result<()> {
+        // Size is advisory in the dev runtime — the backing store is a plain
+        // host directory (no block image to bound).
+        std::fs::create_dir_all(self.volumes_dir.join(format!("{volume_id}.data")))
+            .context("create volume dir")?;
+        Ok(())
+    }
+
+    async fn delete_volume(&self, volume_id: &str) -> Result<()> {
+        let dir = self.volumes_dir.join(format!("{volume_id}.data"));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).context("remove volume dir")?;
+        }
         Ok(())
     }
 }

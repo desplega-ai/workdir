@@ -76,13 +76,14 @@ pub async fn create(
     }
 
     let id = ids::volume_id();
-    // Allocate the backing image: a sparse file, formatted ext4 with a stable
-    // label so the guest can mount it by LABEL regardless of /dev/vdX ordering.
-    let dir = &state.cfg.runtime.volumes_dir;
-    std::fs::create_dir_all(dir).map_err(|e| ApiError::Internal(e.into()))?;
-    let path = dir.join(format!("{id}.ext4"));
-    let bytes = req.size_gb as u64 * 1024 * 1024 * 1024;
-    allocate_ext4(&path, bytes, &ids::volume_label(&id))
+    // Allocate the backing store through the runtime: a sparse ext4 image with a
+    // stable label under Firecracker (mountable by LABEL regardless of /dev/vdX
+    // ordering), a plain host dir in the dev runtime. Volumes live on the node
+    // that runs the sandbox; single-node today, so the local runtime is it.
+    state
+        .local
+        .runtime()
+        .create_volume(&id, req.size_gb)
         .await
         .map_err(ApiError::Internal)?;
 
@@ -111,8 +112,9 @@ pub async fn delete(
             "volume is attached to sandbox {sb}; delete or stop that sandbox first"
         )));
     }
-    let path = state.cfg.runtime.volumes_dir.join(format!("{id}.ext4"));
-    let _ = std::fs::remove_file(&path);
+    if let Err(e) = state.local.runtime().delete_volume(&id).await {
+        tracing::warn!(volume = %id, error = %e, "volume backing-store removal failed; deleting the record anyway");
+    }
     state.store.delete_volume(&id).map_err(ApiError::Internal)?;
     Ok(Json(json!({ "id": id, "deleted": true })))
 }
@@ -125,23 +127,4 @@ fn load_owned(state: &AppState, ctx: &AuthContext, id: &str) -> ApiResult<Volume
         Some(v) if v.org_id == ctx.org_id || ctx.admin => Ok(v),
         _ => Err(ApiError::NotFound(format!("volume {id}"))),
     }
-}
-
-/// Create a sparse `bytes`-sized ext4 image at `path`, labelled `label`.
-async fn allocate_ext4(path: &std::path::Path, bytes: u64, label: &str) -> anyhow::Result<()> {
-    use anyhow::{bail, Context};
-    let f = std::fs::File::create(path).context("create volume image")?;
-    f.set_len(bytes).context("size volume image")?;
-    drop(f);
-    let out = tokio::process::Command::new("mkfs.ext4")
-        .args(["-F", "-q", "-L", label])
-        .arg(path)
-        .output()
-        .await
-        .context("run mkfs.ext4 (is e2fsprogs installed?)")?;
-    if !out.status.success() {
-        let _ = std::fs::remove_file(path);
-        bail!("mkfs.ext4 failed: {}", String::from_utf8_lossy(&out.stderr));
-    }
-    Ok(())
 }

@@ -100,6 +100,27 @@ struct VmRecord {
     /// standby can take a fast Diff snapshot (only dirty pages) onto it.
     #[serde(default)]
     snapshotted: bool,
+    /// Persistent volumes attached at boot (Phase 5). Restores must re-stage the
+    /// backing files into the fresh chroot — the snapshot's drives reference them
+    /// by chroot-relative name.
+    #[serde(default)]
+    volumes: Vec<VolumeStage>,
+}
+
+/// One attached persistent volume as the runtime staged it.
+#[derive(Serialize, Deserialize, Clone)]
+struct VolumeStage {
+    /// Backing file name as the drive references it (chroot-relative under the
+    /// jailer), e.g. `vol_ab12cd.ext4`.
+    file: String,
+    /// The real backing image under `volumes_dir`. Hardlinked into the chroot so
+    /// guest writes land on the one persistent inode.
+    host_path: PathBuf,
+    /// Guest mount point.
+    mount_path: String,
+    /// ext4 label (set at mkfs) so the guest can mount by label, with the
+    /// virtio device path as fallback.
+    label: String,
 }
 
 // --- sandbox networking (bridge + NAT) -------------------------------------
@@ -176,6 +197,8 @@ pub struct FirecrackerRuntime {
     jailer_bin: String,
     kernel_image: String,
     images_dir: PathBuf,
+    /// Persistent-volume backing images (Phase 5).
+    volumes_dir: PathBuf,
     workspaces: Workspaces,
     chroot_base: PathBuf,
     use_jailer: bool,
@@ -189,8 +212,6 @@ pub struct FirecrackerRuntime {
     /// Share one read-only base rootfs across VMs instead of a per-VM COW copy
     /// (Phase 3 density); the guest layers a tmpfs+overlayfs on top.
     shared_rootfs: bool,
-    /// Backing images for persistent volumes (Phase 5); attached as extra drives.
-    volumes_dir: PathBuf,
     /// Launch Firecracker with `--no-seccomp` (see config docs); needed for
     /// snapshot/create under the jailer on some kernels (firecracker#1088).
     no_seccomp: bool,
@@ -209,6 +230,7 @@ impl FirecrackerRuntime {
             jailer_bin: cfg.jailer_bin.clone(),
             kernel_image: cfg.kernel_image.clone(),
             images_dir: cfg.images_dir.clone(),
+            volumes_dir: cfg.volumes_dir.clone(),
             workspaces: Workspaces::new(cfg.workspace_dir.clone()),
             chroot_base: cfg.workspace_dir.join("jail"),
             use_jailer: cfg.use_jailer,
@@ -217,7 +239,6 @@ impl FirecrackerRuntime {
             prewarm_mem_cache: cfg.prewarm_mem_cache,
             cpu_template: cfg.cpu_template.clone(),
             shared_rootfs: cfg.shared_rootfs,
-            volumes_dir: cfg.volumes_dir.clone(),
             no_seccomp: cfg.firecracker_no_seccomp,
             next_cid: AtomicU32::new(3), // CIDs 0-2 are reserved
             next_tap: AtomicU32::new(0),
@@ -387,6 +408,31 @@ impl FirecrackerRuntime {
         self.workspaces.create(&handle)?;
         let rootfs = self.rootfs_path(spec);
 
+        // Persistent volumes (Phase 5): resolve each attach to its backing image
+        // up front so a missing volume fails before any resources are allocated.
+        // Drives are configured pre-boot, so volumes only ride cold boots — the
+        // service layer keeps volume sandboxes off the warm/snapshot paths.
+        let vol_stages = spec
+            .volumes
+            .iter()
+            .map(|v| {
+                let file = format!("{}.ext4", v.volume_id);
+                let host_path = self.volumes_dir.join(&file);
+                if !host_path.exists() {
+                    bail!("volume {} has no backing image at {host_path:?}", v.volume_id);
+                }
+                Ok(VolumeStage {
+                    file,
+                    host_path,
+                    mount_path: v.mount_path.clone(),
+                    label: ids::volume_label(&v.volume_id),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if !vol_stages.is_empty() && snapshot.is_some() {
+            bail!("volumes cannot attach to a snapshot boot (drives are configured pre-boot)");
+        }
+
         // Per-VM tap on the host bridge, for NAT egress (common to both launch
         // modes). Snapshot restores reuse the snapshot's NIC, so tap only on a
         // fresh boot.
@@ -452,6 +498,23 @@ impl FirecrackerRuntime {
                     .context("stage rootfs into chroot")?;
                 let _ = tokio::process::Command::new("chown").arg(&owner).arg(&rdst).status().await;
             }
+            // Persistent volumes: HARDLINK the backing image into the chroot —
+            // same inode, so guest writes persist under volumes_dir after this VM
+            // is gone. A copy here would silently fork the data, so a failed link
+            // (volumes_dir on a different filesystem) fails the boot instead.
+            // chown is required (and safe — attachment is exclusive) so the
+            // jailed uid can open it read-write.
+            for v in &vol_stages {
+                let dst = chroot_root.join(&v.file);
+                let _ = std::fs::remove_file(&dst);
+                std::fs::hard_link(&v.host_path, &dst).with_context(|| {
+                    format!(
+                        "hardlink volume {} into chroot (volumes_dir must share a filesystem with the jail)",
+                        v.file
+                    )
+                })?;
+                let _ = tokio::process::Command::new("chown").arg(&owner).arg(&dst).status().await;
+            }
             (
                 chroot_root.join("api.sock"),
                 chroot_root.join("vsock.sock"),
@@ -513,6 +576,7 @@ impl FirecrackerRuntime {
                 has_secrets: false,
                 standby: false,
                 snapshotted: false,
+                volumes: vol_stages.clone(),
             },
         );
         self.persist_record(&handle);
@@ -589,30 +653,18 @@ impl FirecrackerRuntime {
                     "is_root_device": true,
                     "is_read_only": self.shared_for(spec),
                 })).await?;
-                // Persistent volumes (Phase 5): stage each backing image into the
-                // chroot (hardlink → writes hit the real file; chown to the jailed
-                // uid) and attach it as an extra writable drive. The guest mounts
-                // them by ext4 LABEL in `apply_features`. Volumes force cold boot,
-                // so this fresh-boot path is the only place they're configured.
-                for (i, va) in spec.volumes.iter().enumerate() {
-                    let drive_id = format!("vol{i}");
-                    let backing = self.volumes_dir.join(format!("{}.ext4", va.volume_id));
-                    let path_on_host = if self.use_jailer {
-                        let chroot_root = api_sock.parent().context("api_sock has no parent")?;
-                        let dst = chroot_root.join(format!("{}.ext4", va.volume_id));
-                        let _ = std::fs::remove_file(&dst);
-                        std::fs::hard_link(&backing, &dst)
-                            .with_context(|| format!("stage volume {} (allocated?)", va.volume_id))?;
-                        let uid = self.jailer_uid_base + tap_idx;
-                        let _ = tokio::process::Command::new("chown")
-                            .arg(format!("{uid}:{uid}")).arg(&dst).status().await;
-                        format!("{}.ext4", va.volume_id)
+                // Persistent volumes as extra virtio block drives. Order matters:
+                // the rootfs is vda, so volume i appears at /dev/vd{b+i} — the
+                // device-path fallback `apply_features` mounts by.
+                for (i, v) in vol_stages.iter().enumerate() {
+                    let path = if self.use_jailer {
+                        v.file.clone()
                     } else {
-                        backing.to_string_lossy().into_owned()
+                        v.host_path.to_string_lossy().into_owned()
                     };
-                    self.fc_api(&api_sock, "PUT", &format!("/drives/{drive_id}"), &json!({
-                        "drive_id": drive_id,
-                        "path_on_host": path_on_host,
+                    self.fc_api(&api_sock, "PUT", &format!("/drives/vol{i}"), &json!({
+                        "drive_id": format!("vol{i}"),
+                        "path_on_host": path,
                         "is_root_device": false,
                         "is_read_only": false,
                     })).await?;
@@ -668,6 +720,32 @@ impl FirecrackerRuntime {
                 rec.resident_env = spec.env.clone();
                 rec.resident_env.extend(spec.secret_env.clone());
                 rec.has_secrets = !spec.secret_env.is_empty();
+            }
+        }
+
+        // Mount persistent volumes first — inline files and startup commands may
+        // target paths inside them. Prefer mount-by-label (stable across device
+        // renumbering); fall back to the positional virtio path (/dev/vd{b+i},
+        // rootfs is vda). A failed mount fails the boot: continuing silently
+        // would let "persistent" writes land in the ephemeral root.
+        for (i, v) in spec.volumes.iter().enumerate() {
+            let label = ids::volume_label(&v.volume_id);
+            let dev = format!("/dev/vd{}", (b'b' + i as u8) as char);
+            let cmd = format!(
+                "mkdir -p {mp} && (mount -L {label} {mp} 2>/dev/null || mount {dev} {mp})",
+                mp = shell_quote(&v.mount_path),
+            );
+            let res = self
+                .agent_call(handle, &json!({"op": "exec", "cmd": cmd, "background": false}))
+                .await?;
+            let exit = res.get("exit_code").and_then(|c| c.as_i64()).unwrap_or(-1);
+            if exit != 0 {
+                bail!(
+                    "mount volume {} at {} failed (exit {exit}): {}",
+                    v.volume_id,
+                    v.mount_path,
+                    res.get("stderr").and_then(|s| s.as_str()).unwrap_or("")
+                );
             }
         }
 
@@ -739,22 +817,6 @@ impl FirecrackerRuntime {
                 .agent_call(handle, &json!({
                     "op": "exec",
                     "cmd": format!("mkdir -p {}; {}{}", shell_quote(&m.mount_path), env_exports, args),
-                    "background": false,
-                }))
-                .await;
-        }
-
-        // Persistent volumes: mount each attached block device by its ext4 LABEL
-        // (assigned at volume-create), so the guest /dev/vdX ordering doesn't
-        // matter. The fs already exists, so this is just mkdir + mount; data from
-        // a prior attachment comes back intact.
-        for va in &spec.volumes {
-            let label = crate::ids::volume_label(&va.volume_id);
-            let p = shell_quote(&va.mount_path);
-            let _ = self
-                .agent_call(handle, &json!({
-                    "op": "exec",
-                    "cmd": format!("mkdir -p {p} && mount LABEL={label} {p}"),
                     "background": false,
                 }))
                 .await;
@@ -1112,7 +1174,7 @@ impl Runtime for FirecrackerRuntime {
         // snapshot, and wait for the guest agent. After a control-plane restart
         // the in-memory record is gone, so rehydrate it from disk first.
         self.ensure_record_loaded(handle);
-        let (api_sock, jail, vsock_uds, tap, tap_idx) = {
+        let (api_sock, jail, vsock_uds, tap, tap_idx, volumes) = {
             let vms = self.vms.lock().unwrap();
             let v = vms.get(handle).ok_or_else(|| anyhow!("unknown vm {handle} (no persisted record)"))?;
             (
@@ -1121,6 +1183,7 @@ impl Runtime for FirecrackerRuntime {
                 v.vsock_uds.clone(),
                 v.tap.clone(),
                 v.tap_idx,
+                v.volumes.clone(),
             )
         };
         let start = Instant::now();
@@ -1177,6 +1240,15 @@ impl Runtime for FirecrackerRuntime {
             stage("snapshot.file")?;
             stage("mem.file")?;
             stage("rootfs.ext4")?;
+            // Persistent volumes: the snapshot's drives reference their backing
+            // files by chroot-relative name; hardlink each from its real image
+            // (same inode — writes keep landing on the persistent store).
+            for v in &volumes {
+                let dst = new_chroot.join(&v.file);
+                let _ = std::fs::remove_file(&dst);
+                std::fs::hard_link(&v.host_path, &dst)
+                    .with_context(|| format!("re-stage volume {} into restore chroot", v.file))?;
+            }
             let new_api = new_chroot.join("api.sock");
             for _ in 0..400 {
                 if new_api.exists() {
@@ -1448,6 +1520,9 @@ impl Runtime for FirecrackerRuntime {
                 has_secrets: false,
                 standby: false,
                 snapshotted: false,
+                // Fork children never inherit volumes (exclusive attach; the
+                // service refuses to fork a volume-attached parent).
+                volumes: Vec::new(),
             },
         );
         self.persist_record(&child);
@@ -1505,6 +1580,36 @@ impl Runtime for FirecrackerRuntime {
             if let Some(c) = active_chroot {
                 let _ = std::fs::remove_dir_all(c);
             }
+        }
+        Ok(())
+    }
+
+    async fn create_volume(&self, volume_id: &str, size_gb: u32) -> Result<()> {
+        // A sparse, labelled ext4 image: disk is consumed as the guest writes,
+        // and the label lets the guest mount it independent of /dev/vdX order.
+        std::fs::create_dir_all(&self.volumes_dir).context("create volumes dir")?;
+        let path = self.volumes_dir.join(format!("{volume_id}.ext4"));
+        let f = std::fs::File::create(&path).context("create volume image")?;
+        f.set_len(size_gb as u64 * 1024 * 1024 * 1024).context("size volume image")?;
+        drop(f);
+        let label = ids::volume_label(volume_id);
+        let out = tokio::process::Command::new("mkfs.ext4")
+            .args(["-F", "-q", "-L", &label])
+            .arg(&path)
+            .output()
+            .await
+            .context("run mkfs.ext4 (is e2fsprogs installed?)")?;
+        if !out.status.success() {
+            let _ = std::fs::remove_file(&path);
+            bail!("mkfs.ext4 failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Ok(())
+    }
+
+    async fn delete_volume(&self, volume_id: &str) -> Result<()> {
+        let path = self.volumes_dir.join(format!("{volume_id}.ext4"));
+        if path.exists() {
+            std::fs::remove_file(&path).context("remove volume image")?;
         }
         Ok(())
     }

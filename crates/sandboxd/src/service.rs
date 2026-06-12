@@ -852,6 +852,14 @@ pub async fn fork_sandbox(state: &AppState, ctx: &AuthContext, parent: Sandbox) 
             "cannot fork a sandbox with resident secrets; remove secrets and retry".into(),
         ));
     }
+    // Volumes attach exclusively, but the parent's snapshot carries its volume
+    // drives — a forked child would either fail to find the backing files or,
+    // worse, share writable block devices with the parent. Refuse.
+    if !parent.volumes.is_empty() {
+        return Err(ApiError::Conflict(
+            "cannot fork a sandbox with attached volumes; volumes are exclusive to one sandbox".into(),
+        ));
+    }
     // The parent must be live; a standby parent transparently auto-resumes first.
     let parent = ensure_running(state, parent).await?;
     if parent.state != State::Running {
