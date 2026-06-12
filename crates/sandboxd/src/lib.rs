@@ -8,6 +8,7 @@ pub mod api;
 pub mod app;
 pub mod auth;
 pub mod background;
+pub mod bench;
 pub mod capacity;
 pub mod catalog;
 pub mod config;

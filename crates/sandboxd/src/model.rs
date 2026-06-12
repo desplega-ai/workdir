@@ -14,6 +14,9 @@ pub enum BootPath {
     HotPool,
     SnapshotRestore,
     ColdBoot,
+    /// Cloned from a sibling's snapshot artifact (roadmap Phase 3 fork). Reported
+    /// separately so fork latency is never hidden behind cold-boot numbers.
+    Fork,
 }
 
 impl BootPath {
@@ -22,6 +25,7 @@ impl BootPath {
             BootPath::HotPool => "hot_pool",
             BootPath::SnapshotRestore => "snapshot_restore",
             BootPath::ColdBoot => "cold_boot",
+            BootPath::Fork => "fork",
         }
     }
 }

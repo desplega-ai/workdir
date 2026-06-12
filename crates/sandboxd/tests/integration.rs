@@ -4,14 +4,28 @@
 
 use sandboxd::app::build_state;
 use sandboxd::config::Config;
+use sandboxd::state::AppState;
 
 async fn spawn_server() -> (String, String, tempfile::TempDir) {
-    // The mock runtime is dev-only and refuses to start without this opt-in.
-    std::env::set_var("WORKDIR_ALLOW_INSECURE_RUNTIME", "1");
+    let (base, key, _state, tmp) = spawn_server_full().await;
+    (base, key, tmp)
+}
+
+/// Like [`spawn_server`] but also hands back the in-process [`AppState`], so a
+/// test can drive service-layer operations (e.g. the idle reaper's standby
+/// path) directly instead of waiting out the real auto-stop window.
+async fn spawn_server_full() -> (String, String, AppState, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
-    let data = tmp.path().to_path_buf();
+    let (base, state) = serve_on(tmp.path().to_path_buf()).await;
+    (base, "sk_live_test".to_string(), state, tmp)
+}
+
+/// Test config rooted at `data` (mock runtime, fixed admin key). Reusing the
+/// same `data` across two `serve_on` calls simulates a control-plane restart:
+/// the SQLite store and on-disk workspaces persist, but the runtime is fresh.
+fn test_config(data: &std::path::Path) -> Config {
     let mut cfg = Config::default();
-    cfg.server.data_dir = data.clone();
+    cfg.server.data_dir = data.to_path_buf();
     cfg.server.bind = "127.0.0.1:0".into();
     cfg.server.public_domain = "test.local".into();
     cfg.runtime.kind = "mock".into();
@@ -19,19 +33,25 @@ async fn spawn_server() -> (String, String, tempfile::TempDir) {
     cfg.runtime.images_dir = data.join("images");
     cfg.runtime.kernel_image = data.join("kernel/vmlinux").to_string_lossy().to_string();
     cfg.auth.bootstrap_admin_key = "sk_live_test".into();
+    cfg
+}
 
-    let state = build_state(cfg).await.expect("build state");
+/// Build state + serve on an ephemeral port for the given data dir.
+async fn serve_on(data: std::path::PathBuf) -> (String, AppState) {
+    // The mock runtime is dev-only and refuses to start without this opt-in.
+    std::env::set_var("WORKDIR_ALLOW_INSECURE_RUNTIME", "1");
+    let state = build_state(test_config(&data)).await.expect("build state");
     // Warm the base pool so the default create takes the hot_pool path.
     for _ in 0..4 {
         state.local.warm_once().await;
     }
-    let app = sandboxd::api::router(state);
+    let app = sandboxd::api::router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    (format!("http://{addr}"), "sk_live_test".to_string(), tmp)
+    (format!("http://{addr}"), state)
 }
 
 fn client() -> reqwest::Client {
@@ -336,4 +356,244 @@ async fn browser_requires_explicit_resources_and_image() {
     assert!(sb["urls"]["vnc"].as_str().unwrap().contains("-6080."));
     assert!(sb["urls"]["cdp"].as_str().unwrap().contains("-9222."));
     assert!(sb["browser_ready_ms"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn standby_preserves_state_and_auto_resumes() {
+    // Roadmap Phase 1: an idle sandbox is snapshotted + RAM-freed into `standby`
+    // (billing $0), then transparently auto-resumes — with its disk intact — on
+    // the next request.
+    let (base, key, state, _tmp) = spawn_server_full().await;
+    let c = client();
+    let auth = format!("Bearer {key}");
+
+    let id = c
+        .post(format!("{base}/v1/sandboxes"))
+        .header("authorization", &auth)
+        .send().await.unwrap()
+        .json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str().unwrap().to_string();
+
+    // Write a file so we can prove disk state survives the snapshot/restore.
+    c.put(format!("{base}/v1/sandboxes/{id}/files"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"path": "keep.txt", "content": "survives"}))
+        .send().await.unwrap();
+
+    // Drive the reaper's decision directly (the real window is >= 30s).
+    let sb = state.store.get_sandbox(&id).unwrap().unwrap();
+    let org_id = sb.org_id.clone();
+    let parked = sandboxd::service::standby_sandbox(&state, sb).await.expect("standby");
+    assert_eq!(parked.state.as_str(), "standby");
+
+    // The API reports standby and it bills $0: no open billing interval remains.
+    let view: serde_json::Value = c
+        .get(format!("{base}/v1/sandboxes/{id}"))
+        .header("authorization", &auth)
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(view["state"], "standby");
+    assert_eq!(view["cost_estimate_usd"], serde_json::json!(0.0));
+    let open_now = state.store.usage_for_org(&org_id).unwrap()
+        .into_iter().filter(|iv| iv.sandbox_id == id && iv.ended_at.is_none()).count();
+    assert_eq!(open_now, 0, "standby must close the billing interval ($0 while parked)");
+
+    // First request auto-resumes; the file written before standby is still there.
+    let out: serde_json::Value = c
+        .post(format!("{base}/v1/sandboxes/{id}/exec"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"cmd": "cat keep.txt"}))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(out["stdout"], "survives", "disk state must survive standby");
+
+    // Back to running, fast, and billing again.
+    let view: serde_json::Value = c
+        .get(format!("{base}/v1/sandboxes/{id}"))
+        .header("authorization", &auth)
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(view["state"], "running");
+    assert!(view["timings"]["ready_ms"].as_u64().unwrap() < 200, "resume < 200ms (Phase 1 target)");
+    let open_after = state.store.usage_for_org(&org_id).unwrap()
+        .into_iter().filter(|iv| iv.sandbox_id == id && iv.ended_at.is_none()).count();
+    assert_eq!(open_after, 1, "auto-resume reopens exactly one billing interval");
+}
+
+#[tokio::test]
+async fn benchmark_harness_separates_boot_paths() {
+    // Roadmap Phase 0: a sweep measures cold_boot / hot_pool / snapshot_restore
+    // separately and the table reports them without merging.
+    let (base, key, _state, _tmp) = spawn_server_full().await;
+    let c = client();
+    let auth = format!("Bearer {key}");
+
+    let res: serde_json::Value = c
+        .post(format!("{base}/v1/benchmarks/run"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"image": "base", "iterations": 1}))
+        .send().await.unwrap().json().await.unwrap();
+    assert!(res["ran"].as_u64().unwrap() >= 3, "one iteration measures all three paths");
+
+    let table: serde_json::Value = c
+        .get(format!("{base}/v1/benchmarks"))
+        .header("authorization", &auth)
+        .send().await.unwrap().json().await.unwrap();
+    let series = table["series"].as_array().unwrap();
+    let find = |path: &str| series.iter().find(|s| s["boot_path"] == path).cloned();
+    let cold = find("cold_boot").expect("cold_boot series");
+    let hot = find("hot_pool").expect("hot_pool series");
+    let restore = find("snapshot_restore").expect("snapshot_restore series");
+
+    // Paths are reported separately, with the expected ordering.
+    let p50 = |v: &serde_json::Value| v["ready_ms_p50"].as_u64().unwrap();
+    assert!(p50(&hot) < p50(&cold), "hot_pool must beat cold_boot");
+    assert!(p50(&restore) < p50(&cold), "snapshot_restore must beat cold_boot");
+    // The simulated optimized restore meets the Phase 2 target.
+    assert!(restore["ready_ms_p90"].as_u64().unwrap() <= 50, "snapshot_restore p90 <= 50ms (simulated)");
+}
+
+#[tokio::test]
+async fn fork_clones_an_instant_sibling() {
+    // Roadmap Phase 3: fork copies the parent's snapshot artifact into a new,
+    // independent sandbox that starts from the parent's exact disk state.
+    let (base, key, _state, _tmp) = spawn_server_full().await;
+    let c = client();
+    let auth = format!("Bearer {key}");
+
+    let parent_id = c
+        .post(format!("{base}/v1/sandboxes"))
+        .header("authorization", &auth)
+        .send().await.unwrap()
+        .json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str().unwrap().to_string();
+
+    // Seed state on the parent that the fork must inherit.
+    c.put(format!("{base}/v1/sandboxes/{parent_id}/files"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"path": "inherited.txt", "content": "from-parent"}))
+        .send().await.unwrap();
+
+    // Fork.
+    let resp = c
+        .post(format!("{base}/v1/sandboxes/{parent_id}/fork"))
+        .header("authorization", &auth)
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 201);
+    let child: serde_json::Value = resp.json().await.unwrap();
+    let child_id = child["id"].as_str().unwrap().to_string();
+    assert_ne!(child_id, parent_id, "fork must produce a new sandbox id");
+    assert_eq!(child["state"], "running");
+    assert_eq!(child["boot_path"], "fork", "fork must report its own boot path");
+
+    // The child starts from the parent's disk state.
+    let out: serde_json::Value = c
+        .post(format!("{base}/v1/sandboxes/{child_id}/exec"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"cmd": "cat inherited.txt"}))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(out["stdout"], "from-parent", "child inherits the parent's disk");
+
+    // Child and parent are independent: writing in the child does not touch the
+    // parent, and deleting the child leaves the parent running.
+    c.put(format!("{base}/v1/sandboxes/{child_id}/files"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"path": "inherited.txt", "content": "child-only"}))
+        .send().await.unwrap();
+    let parent_out: serde_json::Value = c
+        .post(format!("{base}/v1/sandboxes/{parent_id}/exec"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"cmd": "cat inherited.txt"}))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(parent_out["stdout"], "from-parent", "parent disk is unaffected by child writes");
+
+    let del = c.delete(format!("{base}/v1/sandboxes/{child_id}"))
+        .header("authorization", &auth).send().await.unwrap();
+    assert!(del.status().is_success());
+    let parent_view: serde_json::Value = c
+        .get(format!("{base}/v1/sandboxes/{parent_id}"))
+        .header("authorization", &auth)
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(parent_view["state"], "running", "parent survives the child's deletion");
+}
+
+#[tokio::test]
+async fn standby_survives_control_plane_restart() {
+    // Roadmap Phase 1 (perpetual): a standby sandbox must come back after the
+    // control plane restarts — its VM record is persisted to disk, so a fresh
+    // runtime rehydrates it and `restore` works. Without this, "perpetual"
+    // would only hold until the next daemon restart.
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().to_path_buf();
+    let c = client();
+    let auth = "Bearer sk_live_test".to_string();
+
+    // --- first boot: create, seed disk state, then park in standby ---
+    let id = {
+        let (base, state) = serve_on(data.clone()).await;
+        let id = c
+            .post(format!("{base}/v1/sandboxes"))
+            .header("authorization", &auth)
+            .send().await.unwrap()
+            .json::<serde_json::Value>().await.unwrap()["id"]
+            .as_str().unwrap().to_string();
+        c.put(format!("{base}/v1/sandboxes/{id}/files"))
+            .header("authorization", &auth)
+            .json(&serde_json::json!({"path": "persist.txt", "content": "across-restart"}))
+            .send().await.unwrap();
+        let sb = state.store.get_sandbox(&id).unwrap().unwrap();
+        let parked = sandboxd::service::standby_sandbox(&state, sb).await.expect("standby");
+        assert_eq!(parked.state.as_str(), "standby");
+        id
+    };
+
+    // --- restart: a brand-new server/runtime on the same data dir ---
+    let (base2, _state2) = serve_on(data.clone()).await;
+
+    // The sandbox is still standby after the restart (reconcile leaves it).
+    let view: serde_json::Value = c
+        .get(format!("{base2}/v1/sandboxes/{id}"))
+        .header("authorization", &auth)
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(view["state"], "standby", "standby must survive the restart, not be failed");
+
+    // A request to the fresh runtime auto-resumes from the persisted record, and
+    // the disk state written before the restart is intact.
+    let out: serde_json::Value = c
+        .post(format!("{base2}/v1/sandboxes/{id}/exec"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"cmd": "cat persist.txt"}))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(out["stdout"], "across-restart", "disk + standby survive a control-plane restart");
+
+    let view: serde_json::Value = c
+        .get(format!("{base2}/v1/sandboxes/{id}"))
+        .header("authorization", &auth)
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(view["state"], "running");
+}
+
+#[tokio::test]
+async fn benchmark_sweep_covers_all_curated_images() {
+    // Roadmap Phase 0 (complete): a full sweep measures every curated image, not
+    // just `base`, each at its own shape.
+    let (base, key, _state, _tmp) = spawn_server_full().await;
+    let c = client();
+    let auth = format!("Bearer {key}");
+
+    let res: serde_json::Value = c
+        .post(format!("{base}/v1/benchmarks/run"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"image": "all", "iterations": 1}))
+        .send().await.unwrap().json().await.unwrap();
+
+    let series = res["series"].as_array().unwrap();
+    let images: std::collections::BTreeSet<&str> =
+        series.iter().filter_map(|s| s["image"].as_str()).collect();
+    for want in ["base", "node-python", "browser", "heavy-build"] {
+        assert!(images.contains(want), "sweep must cover {want}; got {images:?}");
+    }
+    // Each image is still reported with separated boot paths.
+    let browser_paths: std::collections::BTreeSet<&str> = series.iter()
+        .filter(|s| s["image"] == "browser")
+        .filter_map(|s| s["boot_path"].as_str())
+        .collect();
+    assert!(browser_paths.contains("cold_boot") && browser_paths.contains("snapshot_restore"));
 }

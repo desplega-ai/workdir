@@ -125,6 +125,13 @@ pub trait Runtime: Send + Sync {
         None
     }
 
+    /// Reclaim per-VM jail/chroot directories left behind by VMs that are no
+    /// longer live (under the jailer, teardown can leak these). Returns how many
+    /// directories were removed. Default: nothing to do.
+    fn gc_stale_jails(&self) -> usize {
+        0
+    }
+
     /// Pre-boot a warm microVM for a hot pool. Returns its handle.
     async fn prewarm(&self, spec: &VmSpec) -> Result<WarmVm>;
 
@@ -159,7 +166,25 @@ pub trait Runtime: Send + Sync {
     /// Resume from a stopped disk/snapshot. Returns resume timing in ms.
     async fn resume(&self, handle: &str) -> Result<u64>;
 
+    /// Park the VM in perpetual standby (roadmap Phase 1): snapshot it to disk,
+    /// then kill the VM process so its guest RAM is returned to the host. The
+    /// runtime retains just enough metadata (snapshot artifact, NIC) to bring it
+    /// back with [`Runtime::restore`]. Returns the snapshot+evict time in ms.
+    async fn standby(&self, handle: &str) -> Result<u64>;
+
+    /// Resume a standby VM from its on-disk snapshot, re-establishing the guest's
+    /// host networking (tap) that the eviction tore down. Returns the restore
+    /// latency in ms — the number Phase 2 drives toward < 25ms.
+    async fn restore(&self, handle: &str) -> Result<u64>;
+
     async fn snapshot(&self, handle: &str) -> Result<SnapshotArtifact>;
+
+    /// Clone a running VM into an instant sibling (roadmap Phase 3): snapshot the
+    /// parent's memory+disk and bring up a new, independent VM from that artifact
+    /// under `child_spec` (its own id, disk copy, and host NIC). Returns the new
+    /// VM with the [`BootPath::Fork`] label and its fork latency. "Nearly free
+    /// once snapshots are solid" — fork latency should track resume latency.
+    async fn fork(&self, parent_handle: &str, child_spec: &VmSpec) -> Result<VmInstance>;
 
     /// Tear down the VM and delete its ephemeral disk.
     async fn delete(&self, handle: &str) -> Result<()>;

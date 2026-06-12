@@ -34,7 +34,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/ready_check", post(ready_check))
         .route("/pause", post(pause))
         .route("/resume", post(resume))
+        .route("/standby", post(standby))
+        .route("/restore", post(restore))
         .route("/snapshot", post(snapshot))
+        .route("/fork", post(fork))
         .route("/delete", post(delete))
         .route("/hot_pool_available", post(hot_pool_available))
         // State for routes is provided by the outer router's `.with_state`.
@@ -142,9 +145,26 @@ async fn resume(State(s): State<AppState>, Json(r): Json<HandleReq>) -> R {
     let ms = s.local.resume(&r.handle).await.map_err(err)?;
     Ok(Json(json!({ "resume_ms": ms })))
 }
+async fn standby(State(s): State<AppState>, Json(r): Json<HandleReq>) -> R {
+    let ms = s.local.standby(&r.handle).await.map_err(err)?;
+    Ok(Json(json!({ "standby_ms": ms })))
+}
+async fn restore(State(s): State<AppState>, Json(r): Json<HandleReq>) -> R {
+    let ms = s.local.restore(&r.handle).await.map_err(err)?;
+    Ok(Json(json!({ "restore_ms": ms })))
+}
 async fn snapshot(State(s): State<AppState>, Json(r): Json<HandleReq>) -> R {
     let art = s.local.snapshot(&r.handle).await.map_err(err)?;
     Ok(Json(serde_json::to_value(art).unwrap()))
+}
+#[derive(Deserialize)]
+struct ForkReq {
+    parent_handle: String,
+    spec: VmSpec,
+}
+async fn fork(State(s): State<AppState>, Json(r): Json<ForkReq>) -> R {
+    let inst = s.local.fork(&r.parent_handle, &r.spec).await.map_err(err)?;
+    Ok(Json(serde_json::to_value(inst).unwrap()))
 }
 async fn delete(State(s): State<AppState>, Json(r): Json<HandleReq>) -> R {
     s.local.delete(&r.handle).await.map_err(err)?;

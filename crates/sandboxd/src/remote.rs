@@ -119,8 +119,25 @@ impl NodeClient for RemoteNodeClient {
         Ok(v.get("resume_ms").and_then(|m| m.as_u64()).unwrap_or(0))
     }
 
+    async fn standby(&self, handle: &str) -> Result<u64> {
+        let v = self.post_json("/internal/standby", json!({ "handle": handle })).await?;
+        Ok(v.get("standby_ms").and_then(|m| m.as_u64()).unwrap_or(0))
+    }
+
+    async fn restore(&self, handle: &str) -> Result<u64> {
+        let v = self.post_json("/internal/restore", json!({ "handle": handle })).await?;
+        Ok(v.get("restore_ms").and_then(|m| m.as_u64()).unwrap_or(0))
+    }
+
     async fn snapshot(&self, handle: &str) -> Result<SnapshotArtifact> {
         let v = self.post_json("/internal/snapshot", json!({ "handle": handle })).await?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    async fn fork(&self, parent_handle: &str, child_spec: &VmSpec) -> Result<VmInstance> {
+        let v = self
+            .post_json("/internal/fork", json!({ "parent_handle": parent_handle, "spec": child_spec }))
+            .await?;
         Ok(serde_json::from_value(v)?)
     }
 

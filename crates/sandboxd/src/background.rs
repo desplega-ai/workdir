@@ -24,8 +24,14 @@ pub fn spawn_warmer(state: AppState) {
     });
 }
 
-/// Auto-stop sandboxes idle past their window (spec §13, §14 auto-stop on).
-/// Browser/VNC activity also bumps `last_active_at` via exec/preview touches.
+/// Park sandboxes idle past their window in perpetual standby (roadmap Phase 1):
+/// snapshot, free RAM, `$0` billing, auto-resume on the next request. This is
+/// the loop that reframes workdir from a sandbox API into a perpetual-sandbox
+/// platform — an idle sandbox stays logically alive but stops costing anything.
+///
+/// A sandbox with resident secrets is never snapshotted (review M3), so it
+/// falls back to a plain stop (explicit resume required). Browser/VNC activity
+/// bumps `last_active_at` via exec/preview touches, as before.
 pub fn spawn_idle_reaper(state: AppState) {
     tokio::spawn(async move {
         loop {
@@ -43,8 +49,20 @@ pub fn spawn_idle_reaper(state: AppState) {
                     continue;
                 }
                 let idle = (now - sb.last_active_at).num_seconds();
-                if idle >= sb.auto_stop_seconds as i64 {
-                    tracing::info!(sandbox = %sb.id, idle_s = idle, "auto-stopping idle sandbox");
+                if idle < sb.auto_stop_seconds as i64 {
+                    continue;
+                }
+                // Standby is gated (off by default) so the snapshot/restore path
+                // is validated on a node before real sandboxes depend on it. A
+                // sandbox with resident secrets is never snapshotted (review M3),
+                // so it always takes the plain stop path.
+                if state.cfg.standby.enabled && sb.secret_names.is_empty() {
+                    tracing::info!(sandbox = %sb.id, idle_s = idle, "idle -> standby (snapshot + free RAM)");
+                    if let Err(e) = service::standby_sandbox(&state, sb).await {
+                        tracing::warn!(error = %e, "standby failed");
+                    }
+                } else {
+                    tracing::info!(sandbox = %sb.id, idle_s = idle, "idle -> stop");
                     if let Err(e) = service::stop_sandbox(&state, sb).await {
                         tracing::warn!(error = %e, "auto-stop failed");
                     }
@@ -125,6 +143,22 @@ pub fn spawn_image_gc(state: AppState) {
                 if state.store.put_image(&img).is_ok() {
                     tracing::info!(image = %reference, "GC'd expired ephemeral image");
                 }
+            }
+        }
+    });
+}
+
+/// Periodically reclaim stale per-VM jail/chroot directories left behind by
+/// teardown under the jailer (disk-only, but they accumulate). Runs every 5
+/// minutes and only removes directories not owned by a live VM and older than a
+/// safety window (so a mid-boot VM is never touched).
+pub fn spawn_jail_gc(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            let removed = state.local.runtime().gc_stale_jails();
+            if removed > 0 {
+                tracing::info!(removed, "reclaimed stale jail directories");
             }
         }
     });

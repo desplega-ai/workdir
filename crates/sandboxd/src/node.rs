@@ -36,7 +36,13 @@ pub trait NodeClient: Send + Sync {
     async fn ready_check(&self, handle: &str, url: &str, timeout_seconds: u32) -> Result<()>;
     async fn pause(&self, handle: &str, persist: bool) -> Result<()>;
     async fn resume(&self, handle: &str) -> Result<u64>;
+    /// Snapshot + free RAM (perpetual standby, Phase 1). Returns evict time (ms).
+    async fn standby(&self, handle: &str) -> Result<u64>;
+    /// Restore a standby VM from its snapshot. Returns restore latency (ms).
+    async fn restore(&self, handle: &str) -> Result<u64>;
     async fn snapshot(&self, handle: &str) -> Result<SnapshotArtifact>;
+    /// Clone a parent VM into an instant sibling (Phase 3 fork).
+    async fn fork(&self, parent_handle: &str, child_spec: &VmSpec) -> Result<VmInstance>;
     async fn delete(&self, handle: &str) -> Result<()>;
 
     /// Ready warm VMs matching an exact image+shape, for the scheduler input.
@@ -165,8 +171,17 @@ impl NodeClient for LocalNode {
     async fn resume(&self, handle: &str) -> Result<u64> {
         self.runtime.resume(handle).await
     }
+    async fn standby(&self, handle: &str) -> Result<u64> {
+        self.runtime.standby(handle).await
+    }
+    async fn restore(&self, handle: &str) -> Result<u64> {
+        self.runtime.restore(handle).await
+    }
     async fn snapshot(&self, handle: &str) -> Result<SnapshotArtifact> {
         self.runtime.snapshot(handle).await
+    }
+    async fn fork(&self, parent_handle: &str, child_spec: &VmSpec) -> Result<VmInstance> {
+        self.runtime.fork(parent_handle, child_spec).await
     }
     async fn delete(&self, handle: &str) -> Result<()> {
         self.runtime.delete(handle).await
