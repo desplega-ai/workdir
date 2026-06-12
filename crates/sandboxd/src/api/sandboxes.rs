@@ -224,15 +224,18 @@ pub async fn browser_screenshot(
     service::touch_activity(&state, &mut sb);
     let node = state.node_for(sb.node_id.as_deref().unwrap_or(""));
 
-    let shot = "/tmp/wd-screenshot.png";
-    let cmd = format!("rm -f {shot}; DISPLAY=:0 import -window root {shot} 2>/dev/null; test -s {shot}");
+    // read_file confines paths under the guest workspace (/workspace), but exec
+    // runs raw — so capture INTO /workspace and read it back by the bare name,
+    // or the two reference different paths.
+    let shot_abs = "/workspace/wd-screenshot.png";
+    let cmd = format!("rm -f {shot_abs}; DISPLAY=:0 import -window root {shot_abs} 2>/dev/null; test -s {shot_abs}");
     if let Err(e) = node
         .exec(&handle, &ExecRequest { cmd, cwd: None, env: Default::default(), background: false })
         .await
     {
         return (StatusCode::BAD_GATEWAY, format!("capture exec failed: {e}")).into_response();
     }
-    match node.read_file(&handle, shot).await {
+    match node.read_file(&handle, "wd-screenshot.png").await {
         Ok(png) if !png.is_empty() => {
             ([(axum::http::header::CONTENT_TYPE, "image/png")], png).into_response()
         }
