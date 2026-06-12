@@ -1022,17 +1022,21 @@ impl Runtime for FirecrackerRuntime {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            // Stage the snapshot artifacts into the new chroot (hardlink, instant).
-            let new_snap = new_chroot.join("snapshot.file");
+            // Stage the snapshot artifacts AND the VM's disk into the new chroot
+            // (hardlink, instant — same inode, so writes still hit the one disk).
+            // The snapshot's block device is backed by "rootfs.ext4"; without it
+            // the load fails ("backing file ... No such file or directory").
+            let stage = |name: &str| -> Result<()> {
+                let dst = new_chroot.join(name);
+                let _ = std::fs::remove_file(&dst);
+                std::fs::hard_link(jail.join(name), &dst)
+                    .or_else(|_| std::fs::copy(jail.join(name), &dst).map(|_| ()))
+                    .with_context(|| format!("stage {name} into restore chroot"))
+            };
             let new_mem = new_chroot.join("mem.file");
-            let _ = std::fs::remove_file(&new_snap);
-            let _ = std::fs::remove_file(&new_mem);
-            std::fs::hard_link(jail.join("snapshot.file"), &new_snap)
-                .or_else(|_| std::fs::copy(jail.join("snapshot.file"), &new_snap).map(|_| ()))
-                .context("stage snapshot into restore chroot")?;
-            std::fs::hard_link(jail.join("mem.file"), &new_mem)
-                .or_else(|_| std::fs::copy(jail.join("mem.file"), &new_mem).map(|_| ()))
-                .context("stage mem into restore chroot")?;
+            stage("snapshot.file")?;
+            stage("mem.file")?;
+            stage("rootfs.ext4")?;
             let new_api = new_chroot.join("api.sock");
             for _ in 0..400 {
                 if new_api.exists() {
