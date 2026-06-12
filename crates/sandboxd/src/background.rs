@@ -148,6 +148,22 @@ pub fn spawn_image_gc(state: AppState) {
     });
 }
 
+/// Periodically reclaim stale per-VM jail/chroot directories left behind by
+/// teardown under the jailer (disk-only, but they accumulate). Runs every 5
+/// minutes and only removes directories not owned by a live VM and older than a
+/// safety window (so a mid-boot VM is never touched).
+pub fn spawn_jail_gc(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            let removed = state.local.runtime().gc_stale_jails();
+            if removed > 0 {
+                tracing::info!(removed, "reclaimed stale jail directories");
+            }
+        }
+    });
+}
+
 /// Keep the local node's heartbeat fresh so the registry/dashboard see it live.
 pub fn spawn_heartbeat(state: AppState) {
     tokio::spawn(async move {

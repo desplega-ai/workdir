@@ -125,6 +125,13 @@ pub trait Runtime: Send + Sync {
         None
     }
 
+    /// Reclaim per-VM jail/chroot directories left behind by VMs that are no
+    /// longer live (under the jailer, teardown can leak these). Returns how many
+    /// directories were removed. Default: nothing to do.
+    fn gc_stale_jails(&self) -> usize {
+        0
+    }
+
     /// Pre-boot a warm microVM for a hot pool. Returns its handle.
     async fn prewarm(&self, spec: &VmSpec) -> Result<WarmVm>;
 

@@ -68,6 +68,7 @@ async fn serve(cfg: Config) -> Result<()> {
     background::spawn_idle_reaper(state.clone());
     background::spawn_credit_enforcer(state.clone());
     background::spawn_image_gc(state.clone());
+    background::spawn_jail_gc(state.clone());
     background::spawn_heartbeat(state.clone());
 
     let app = crate::api::router(state);

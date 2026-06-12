@@ -29,9 +29,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -788,6 +789,59 @@ impl Runtime for FirecrackerRuntime {
                 .unwrap_or(0)
         };
         Some(NetStats { rx_bytes: stat("rx_bytes"), tx_bytes: stat("tx_bytes") })
+    }
+
+    fn gc_stale_jails(&self) -> usize {
+        // Build the set of directories belonging to live VMs: the per-VM jail dir
+        // (chroot_base/<handle>) and the active chroot (the firecracker/<id> dir
+        // derived from the api sock — possibly a `-rN` restore chroot).
+        let (live_jails, live_chroots): (HashSet<PathBuf>, HashSet<PathBuf>) = {
+            let vms = self.vms.lock().unwrap();
+            let mut jails = HashSet::new();
+            let mut chroots = HashSet::new();
+            for (handle, rec) in vms.iter() {
+                jails.insert(self.chroot_base.join(handle));
+                if let Some(c) = rec.api_sock.parent().and_then(|p| p.parent()) {
+                    chroots.insert(c.to_path_buf());
+                }
+            }
+            (jails, chroots)
+        };
+        // Only sweep dirs older than this, so a VM mid-boot (its dir created just
+        // before its record is inserted) is never reclaimed.
+        let stale = |p: &Path| -> bool {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| SystemTime::now().duration_since(t).ok())
+                .map(|d| d.as_secs() > 120)
+                .unwrap_or(false)
+        };
+        let mut removed = 0;
+        // Per-VM jail dirs directly under chroot_base (skip the `firecracker`
+        // container dir and the snapshots cache).
+        if let Ok(entries) = std::fs::read_dir(&self.chroot_base) {
+            for e in entries.flatten() {
+                let p = e.path();
+                let name = e.file_name();
+                if name == "firecracker" || name == "snapshots" {
+                    continue;
+                }
+                if !live_jails.contains(&p) && stale(&p) && std::fs::remove_dir_all(&p).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        // Jailer chroots under chroot_base/firecracker/<id>.
+        if let Ok(entries) = std::fs::read_dir(self.chroot_base.join("firecracker")) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if !live_chroots.contains(&p) && stale(&p) && std::fs::remove_dir_all(&p).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        removed
     }
 
     async fn prewarm(&self, spec: &VmSpec) -> Result<WarmVm> {
