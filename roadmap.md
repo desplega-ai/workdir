@@ -51,50 +51,54 @@ Work splits along two independent axes:
 
 Win Axis A first.
 
-## Production deployment status (2026-06-11)
+## Production deployment status (2026-06-11) — standby LIVE
 
-Phases 0–3 are merged to the branch and the binary is deployed to the live
-Hetzner node (Ubuntu 24.04, x86_64, firecracker + jailer), built on the node.
+Phases 0–3 are deployed to the live Hetzner node (Ubuntu 24.04, x86_64,
+firecracker + jailer v1.16), and **perpetual standby is enabled in production**
+(`[standby] enabled = true`) and verified end to end.
 
-**Measured on the real node** (`POST /v1/benchmarks/run`, base image):
+**Measured on the real node:**
 
-| boot path | ready p50 | create→echo p50 |
+| boot path | p50 | note |
 |---|---|---|
-| `hot_pool` | ~1 ms | ~6 ms |
-| `cold_boot` | ~1.36 s | ~1.36 s |
+| `hot_pool` | ~1 ms ready / ~6 ms create→echo | beats the published 38 ms |
+| `cold_boot` | ~1.37 s | beats the published ~1.9 s |
+| `snapshot_restore` (standby resume) | **~240 ms** | the perpetual-standby resume |
 
-These beat the previously-published marketing numbers (38 ms hot / ~1.9 s cold).
+Live end-to-end check: create → idle 30 s → reaper snapshots + frees RAM →
+`standby` ($0) → next request transparently auto-resumes in ~240 ms with disk and
+memory state intact (a file written before standby is present after resume).
 
-**Standby is deployed but gated OFF (`[standby] enabled = false`)** — so the
-reaper still *stops* idle sandboxes, exactly as before. It is gated because
-**snapshot/restore crashes Firecracker under the jailer**: `PUT /snapshot/create`
-returns an empty response (the process dies) even after passing chroot-relative
-paths. The benchmark harness was the canary that caught this on throwaway VMs,
-with zero impact to real sandboxes — which is exactly why standby ships gated.
+### Getting it working under the jailer (the hard part)
 
-**Open blocker before standby/fork can be enabled in production:** under the
-jailer, `PUT /snapshot/create` makes Firecracker **die silently** (the API
-connection closes with no response/body; no snapshot or mem file is written). The
-guest boots and runs fine — only snapshot crashes. Investigated on the live node
-(Firecracker/Jailer v1.16.0) and **ruled out**:
-- seccomp (`--no-seccomp` applied, `Seccomp: 0` confirmed — still crashes);
-- `RLIMIT_FSIZE` (`Max file size: unlimited`);
-- cgroup OOM (`memory.max = max`, `oom_kill 0`);
-- segfault/OOM (nothing in `dmesg`).
+Snapshot/standby appeared to "crash" Firecracker; `strace` proved otherwise. Four
+distinct issues, all fixed:
+1. **`track_dirty_pages` not set** → `KVM_GET_DIRTY_LOG` returned `ENOENT`. Set it
+   at machine-config (also enables diff snapshots).
+2. **`fc_api` read-to-EOF** (a regression added to capture error bodies) made
+   every call wait for Firecracker to *close* the socket, which it delays for
+   ~200 s after a snapshot — this was the entire "multi-minute snapshot." Return
+   on the success status line instead.
+3. **`fc_api` 5 s timeout** fired mid-snapshot (Firecracker writes the full guest
+   RAM before responding). Snapshot ops now use a 300 s timeout.
+4. **Restore under the jailer**: relaunch *under the jailer* in a fresh chroot,
+   hardlink `snapshot.file`/`mem.file`/`rootfs.ext4` in (instant), and `load`
+   **before** any device config (a snapshot restores its own vsock) — the
+   premature `PUT /vsock` and the missing `rootfs.ext4` backing file were each a
+   400 from `snapshot/load`.
 
-Chroot-relative snapshot paths were applied (so the chrooted Firecracker writes
-into the chroot it owns) but did not change the outcome. The remaining suspects
-are jailer-environment specifics (e.g. `RLIMIT_MEMLOCK` is 8 MB) or a KVM/mmap
-path; the next step is `strace -f` / a core dump on a *single* jailed Firecracker
-during snapshot, isolated from hot-pool churn (the warmer's concurrent boots
-pollute log capture) — i.e. offline debugging, not live-node canaries.
+Ruled out along the way (with evidence): seccomp (`--no-seccomp`, `Seccomp: 0`),
+`RLIMIT_FSIZE` (unlimited), cgroup OOM (`oom_kill 0`).
 
-Related housekeeping: `delete()` leaks per-VM jail directories under the jailer
-(disk-only, reflink-cheap). All snapshot-based features (standby, fork, the
-`/snapshot` endpoint) share this jailer-path work; they work in the mock runtime
-and on direct-launch Firecracker today. Standby remains **gated off** in
-production until this is fixed; the binary is otherwise a safe superset of the
-prior one (benchmark harness, better FC error reporting, opt-in fork).
+### Remaining follow-ups (not blockers)
+
+- **Eviction is ~36 s** (a full 2 GB snapshot at the node's ~137 MB/s). It is a
+  background reaper op, but **diff snapshots** (now possible — `track_dirty_pages`
+  is on) would make an idle VM snapshot in ~1–2 s. Smaller base VMs also help.
+- `delete()`/restore can leak jail/chroot dirs (disk-only, reflink-cheap);
+  `delete()` now cleans the active restore chroot, but a periodic sweep is wanted.
+- Resume is ~240 ms (Phase 1 target met-ish); UFFD demand paging is the Phase 2
+  path to < 25 ms.
 
 ## Phases
 
