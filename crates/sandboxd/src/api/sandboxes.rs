@@ -191,9 +191,11 @@ pub async fn browser_get(
     })))
 }
 
-/// Capture a PNG still of the browser sandbox's page via CDP
-/// `Page.captureScreenshot`. The live desktop is the VNC URL; this is the
-/// convenience snapshot advertised by `browser_get`.
+/// Capture a PNG of the browser sandbox's **live desktop** (what the VNC URL
+/// shows) by grabbing the X root window with ImageMagick, then reading the file
+/// back. Advertised by `browser_get`. Capturing the X display works regardless
+/// of whether chrome's CDP port is up, and shows the whole desktop, not just a
+/// page viewport.
 pub async fn browser_screenshot(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -220,87 +222,22 @@ pub async fn browser_screenshot(
         None => return ApiError::Conflict("no runtime handle".into()).into_response(),
     };
     service::touch_activity(&state, &mut sb);
+    let node = state.node_for(sb.node_id.as_deref().unwrap_or(""));
 
-    // chrome binds CDP to the guest's 127.0.0.1:9222 (the init forwards
-    // eth0:9222 → there); expose_port gives a host-reachable address for it.
-    let upstream = match state
-        .node_for(sb.node_id.as_deref().unwrap_or(""))
-        .expose_port(&handle, 9222)
+    let shot = "/tmp/wd-screenshot.png";
+    let cmd = format!("rm -f {shot}; DISPLAY=:0 import -window root {shot} 2>/dev/null; test -s {shot}");
+    if let Err(e) = node
+        .exec(&handle, &ExecRequest { cmd, cwd: None, env: None, background: false })
         .await
     {
-        Ok(a) => a,
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("cdp expose failed: {e}")).into_response(),
-    };
-    match capture_cdp_png(upstream).await {
-        Ok(png) => ([(axum::http::header::CONTENT_TYPE, "image/png")], png).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("screenshot failed: {e}")).into_response(),
+        return (StatusCode::BAD_GATEWAY, format!("capture exec failed: {e}")).into_response();
     }
-}
-
-/// Drive CDP over a websocket to grab a PNG of the active page.
-async fn capture_cdp_png(upstream: std::net::SocketAddr) -> anyhow::Result<Vec<u8>> {
-    use anyhow::Context;
-    use base64::Engine;
-    use futures::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message;
-
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()?;
-    let targets: Vec<Value> = http
-        .get(format!("http://{upstream}/json"))
-        .send()
-        .await
-        .context("GET cdp /json")?
-        .json()
-        .await
-        .context("parse cdp /json")?;
-    let page = targets
-        .iter()
-        .find(|t| t["type"] == "page")
-        .or_else(|| targets.first())
-        .context("no CDP page target")?;
-    let ws_dbg = page["webSocketDebuggerUrl"]
-        .as_str()
-        .context("no webSocketDebuggerUrl")?;
-    // chrome reports its own 127.0.0.1:9222 host — rewrite to the host-reachable
-    // upstream, keeping the /devtools/page/<id> path.
-    let path = ws_dbg
-        .find("/devtools")
-        .map(|i| &ws_dbg[i..])
-        .context("unexpected ws debugger url")?;
-    let ws_url = format!("ws://{upstream}{path}");
-
-    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.context("cdp ws connect")?;
-    ws.send(Message::Text(
-        r#"{"id":1,"method":"Page.captureScreenshot","params":{"format":"png"}}"#.to_string(),
-    ))
-    .await
-    .context("send captureScreenshot")?;
-
-    loop {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(15), ws.next())
-            .await
-            .context("captureScreenshot timed out")?;
-        let msg = match msg {
-            Some(Ok(m)) => m,
-            _ => anyhow::bail!("cdp ws closed before result"),
-        };
-        if let Message::Text(t) = msg {
-            let v: Value = match serde_json::from_str(&t) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if v["id"] == 1 {
-                if let Some(data) = v["result"]["data"].as_str() {
-                    let _ = ws.close(None).await;
-                    return base64::engine::general_purpose::STANDARD
-                        .decode(data)
-                        .context("decode screenshot base64");
-                }
-                anyhow::bail!("cdp error: {}", v["error"]);
-            }
+    match node.read_file(&handle, shot).await {
+        Ok(png) if !png.is_empty() => {
+            ([(axum::http::header::CONTENT_TYPE, "image/png")], png).into_response()
         }
+        Ok(_) => (StatusCode::BAD_GATEWAY, "screenshot was empty (is the desktop up?)").into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("screenshot read failed: {e}")).into_response(),
     }
 }
 
