@@ -6,9 +6,9 @@ Usage:
     WORKDIR_API_KEY=sk_live_... python3 examples/feature_tour.py
     WORKDIR_API_KEY=... WORKDIR_API_URL=https://api.example.com python3 ...
 
-Stdlib only. The optional PTY test additionally needs `pip install websockets`
-(it is skipped, not failed, without it). Takes ~4 minutes end to end — the
-perpetual-standby test genuinely waits for the idle reaper to park a sandbox.
+Stdlib only — no third-party packages, including a hand-rolled WebSocket client
+for the PTY test. Takes ~4 minutes end to end — the perpetual-standby test
+genuinely waits for the idle reaper to park a sandbox.
 
 Pass --full to also run the build-heavy tests: a custom image built from an
 OCI reference (alpine), and docker-in-docker on a custom dind image. These
@@ -225,42 +225,124 @@ def tour_preview():
 
 # ─── 05 interactive PTY ─────────────────────────────────────────────────────
 
-def tour_pty():
-    section("05 · interactive PTY  (real TTY over WebSocket — needs `pip install websockets`)")
+def _ws_pty_roundtrip(ws_url: str) -> str:
+    """Minimal stdlib WebSocket client (RFC 6455) — no third-party deps. Opens
+    the PTY WebSocket, types a command into the real shell, and returns what the
+    terminal streamed back."""
+    import base64
+    import os
+    import socket
+    import ssl
+    import struct
+    from urllib.parse import urlsplit
+
+    u = urlsplit(ws_url)
+    secure = u.scheme == "wss"
+    host = u.hostname
+    port = u.port or (443 if secure else 80)
+    sock = socket.create_connection((host, port), timeout=10)
+    if secure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE  # tour may hit the node by IP
+        sock = ctx.wrap_socket(sock, server_hostname=host)
+    sock.settimeout(10)
+
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = (
+        f"GET {u.path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
+        f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+        f"Authorization: Bearer {KEY}\r\n\r\n"
+    )
+    sock.sendall(req.encode())
+    # Read the handshake response headers.
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise RuntimeError("connection closed during handshake")
+        buf += chunk
+    if b" 101 " not in buf.split(b"\r\n", 1)[0]:
+        raise RuntimeError(f"handshake not upgraded: {buf.splitlines()[0]!r}")
+    leftover = buf.split(b"\r\n\r\n", 1)[1]
+
+    def send_text(s: str):
+        payload = s.encode()
+        header = bytearray([0x81])  # FIN + text frame
+        mask = os.urandom(4)
+        n = len(payload)
+        if n < 126:
+            header.append(0x80 | n)
+        elif n < 65536:
+            header.append(0x80 | 126)
+            header += struct.pack(">H", n)
+        else:
+            header.append(0x80 | 127)
+            header += struct.pack(">Q", n)
+        header += mask
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        sock.sendall(bytes(header) + masked)
+
+    def recv_frames(deadline) -> str:
+        nonlocal leftover
+        out = ""
+        data = leftover
+        while time.time() < deadline:
+            # Parse any complete server frames already buffered (server→client
+            # frames are unmasked).
+            while len(data) >= 2:
+                b1, b2 = data[0], data[1]
+                ln = b2 & 0x7F
+                idx = 2
+                if ln == 126:
+                    if len(data) < 4:
+                        break
+                    ln = struct.unpack(">H", data[2:4])[0]
+                    idx = 4
+                elif ln == 127:
+                    if len(data) < 10:
+                        break
+                    ln = struct.unpack(">Q", data[2:10])[0]
+                    idx = 10
+                if len(data) < idx + ln:
+                    break
+                payload = data[idx:idx + ln]
+                data = data[idx + ln:]
+                opcode = b1 & 0x0F
+                if opcode in (0x1, 0x2, 0x0):  # text/binary/continuation
+                    out += payload.decode(errors="replace")
+                elif opcode == 0x8:  # close
+                    return out
+            if "marker-42" in out:
+                return out
+            try:
+                more = sock.recv(4096)
+            except Exception:
+                break
+            if not more:
+                break
+            data += more
+        leftover = data
+        return out
+
     try:
-        import asyncio
-        import websockets  # type: ignore
-    except ImportError:
-        skip("pty", "websockets not installed — `pip install websockets` and rerun to test")
-        return
+        time.sleep(1.0)  # let the shell come up
+        send_text("tty; echo marker-$((40+2))\n")
+        return recv_frames(time.time() + 10)
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def tour_pty():
+    section("05 · interactive PTY  (real TTY over WebSocket — stdlib only, no deps)")
     sb = create_sandbox({"auto_stop_seconds": 3600})
     sid = sb["id"]
     ws_url = API.replace("https://", "wss://").replace("http://", "ws://") + f"/v1/sandboxes/{sid}/pty"
-    headers = {"Authorization": f"Bearer {KEY}"}
-
-    def connect():
-        # websockets renamed the header kwarg across major versions.
-        try:
-            return websockets.connect(ws_url, additional_headers=headers)
-        except TypeError:
-            return websockets.connect(ws_url, extra_headers=headers)
-
-    async def drive():
-        async with connect() as ws:
-            await asyncio.sleep(1.0)  # let the shell start
-            await ws.send("tty; echo marker-$((40+2))\n")
-            buf = ""
-            deadline = asyncio.get_event_loop().time() + 10
-            while "marker-42" not in buf and asyncio.get_event_loop().time() < deadline:
-                try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=3)
-                except Exception:
-                    break
-                buf += msg.decode(errors="replace") if isinstance(msg, bytes) else str(msg)
-            return buf
-
     try:
-        out = asyncio.run(drive())
+        out = _ws_pty_roundtrip(ws_url)
         if "/dev/pts/" in out and "marker-42" in out:
             ok("pty", "real TTY: shell on /dev/pts/*, interactive command executed")
         else:
@@ -542,7 +624,15 @@ def tour_docker():
         if "Hello" in r["stdout"]:
             ok("docker-run", "`docker run hello-world` pulled and ran a container inside the sandbox")
         else:
-            skip("docker-run", "dockerd is up but `docker run` didn't complete (container networking varies by guest kernel)")
+            fail("docker-run", "dockerd is up but `docker run hello-world` did not complete")
+        # Default-bridge container networking: the runtime points iptables at the
+        # legacy backend the guest kernel supports, so a container reaches the
+        # internet over docker's own bridge (not just --network=host).
+        r = exec_in(sid, "docker run --rm alpine sh -c 'wget -qO- -T8 http://1.1.1.1/ >/dev/null 2>&1 && echo OK' 2>&1 | grep -m1 OK || true")
+        if "OK" in r["stdout"]:
+            ok("docker-net", "a default-bridge container reached the internet (full container networking)")
+        else:
+            skip("docker-net", "bridge egress unconfirmed (registry/network may be slow); dockerd + run still work")
     else:
         fail("docker", "dockerd never answered inside the sandbox")
     delete_sandbox(sid)

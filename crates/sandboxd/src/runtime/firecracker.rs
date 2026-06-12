@@ -965,20 +965,31 @@ impl FirecrackerRuntime {
         // isolation boundary). Requires a docker-capable image + guest kernel
         // (overlayfs, cgroups, iptables). The host socket is never exposed.
         if spec.docker {
-            // The minimal Firecracker guest kernel ships without netfilter
-            // (nf_tables), so dockerd's default bridge/NAT setup fails to
-            // initialize and the daemon exits before opening its socket
-            // (`iptables: Failed to initialize nft: Protocol not supported`,
-            // observed on the node). `--iptables=false --bridge=none` skips the
-            // network controller dockerd can't build here; the daemon comes up
-            // in ~3s and `docker build` / `docker run` work (validated with
-            // hello-world). Containers needing outbound networking require a
-            // netfilter-capable guest kernel — a deliberate microVM trade-off.
+            // The minimal Firecracker guest kernel has legacy iptables
+            // (`IP_NF_IPTABLES`) + bridge + veth, but NOT nf_tables. Modern
+            // images (docker:dind on Alpine) default iptables to the nft
+            // backend, so dockerd's bridge/NAT setup dies with
+            // `iptables: Failed to initialize nft: Protocol not supported`
+            // (observed on the node). Repoint the iptables family at the LEGACY
+            // backend the kernel does support (best-effort: `update-alternatives`
+            // on Debian, or the `xtables-legacy-multi` symlink on Alpine), enable
+            // forwarding, then start dockerd with its NORMAL bridge networking.
+            // Result (validated on the node): dockerd up + `docker run` with a
+            // default-bridge container reaching the internet — no kernel rebuild.
             let _ = self
                 .agent_call(handle, &json!({
                     "op": "exec",
-                    "cmd": "nohup dockerd --host=unix:///var/run/docker.sock --iptables=false --bridge=none >/var/log/dockerd.log 2>&1 & \
-                            for i in $(seq 1 50); do [ -S /var/run/docker.sock ] && break; sleep 0.2; done",
+                    "cmd": "\
+                        (update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null; \
+                         update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null) || true; \
+                        if [ -e /usr/sbin/xtables-legacy-multi ]; then \
+                          for t in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do \
+                            [ -e /usr/sbin/$t-legacy ] && ln -sf xtables-legacy-multi /usr/sbin/$t 2>/dev/null; \
+                          done; \
+                        fi; \
+                        sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true; \
+                        nohup dockerd --host=unix:///var/run/docker.sock >/var/log/dockerd.log 2>&1 & \
+                        for i in $(seq 1 50); do [ -S /var/run/docker.sock ] && break; sleep 0.2; done",
                     "background": false,
                 }))
                 .await;

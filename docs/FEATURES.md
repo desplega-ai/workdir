@@ -60,14 +60,16 @@ time): `dockerd` + `containerd` + `runc`, an overlayfs-capable guest kernel
 `unix:///var/run/docker.sock` and waits for the socket. After that,
 `docker build` / `docker run` work normally inside the sandbox via `exec`.
 
-**Networking trade-off.** The stock Firecracker guest kernel ships **without
-netfilter** (`nf_tables`), so the runtime starts the daemon with
-`--iptables=false --bridge=none` — otherwise dockerd's default bridge/NAT setup
-fails to initialize and the daemon exits before opening its socket. The daemon
-comes up in ~3s and `docker build` / `docker run` work (validated with
-`docker run hello-world` on the node). Containers that need **outbound
-networking** via the default bridge require a netfilter-capable guest kernel — a
-deliberate microVM trade-off, not a bug.
+**iptables backend.** The stock Firecracker guest kernel has **legacy iptables**
+(`IP_NF_IPTABLES`) + bridge + veth, but **not** `nf_tables`. Modern images
+(`docker:dind` on Alpine) default iptables to the *nft* backend, so dockerd's
+bridge/NAT setup would die with `iptables: Failed to initialize nft: Protocol not
+supported`. Before starting the daemon the runtime repoints the iptables family
+at the **legacy** backend the kernel supports (`update-alternatives` on Debian,
+the `xtables-legacy-multi` symlink on Alpine) and enables `ip_forward`. dockerd
+then comes up with its **normal bridge networking** — validated on the node:
+`docker run hello-world` *and* a default-bridge container reaching the internet,
+no kernel rebuild required.
 
 > Nested KVM is **not** required — containers share the guest kernel. The only
 > host requirement is the same `/dev/kvm` Firecracker already needs.
