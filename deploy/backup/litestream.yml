@@ -1,0 +1,21 @@
+# Litestream — continuous WAL replication of the workdir control-plane SQLite DB
+# to Cloudflare R2. Local reads/writes keep their single-digit-ms latency; this
+# streams changes off-box for point-in-time restore. Credentials + bucket come
+# from /etc/workdir/backup.env (loaded by the systemd unit), so no secrets here.
+#
+# Restore (disaster recovery):
+#   litestream restore -config /etc/litestream.yml /var/lib/workdir/workdir.db
+dbs:
+  - path: /var/lib/workdir/workdir.db
+    replicas:
+      - type: s3
+        endpoint: ${R2_ENDPOINT}            # https://<account_id>.r2.cloudflarestorage.com
+        bucket: ${R2_BUCKET}
+        path: workdir-db                     # key prefix inside the bucket
+        access-key-id: ${R2_ACCESS_KEY_ID}
+        secret-access-key: ${R2_SECRET_ACCESS_KEY}
+        region: auto
+        # R2 ignores object-ACLs; force-path-style keeps the S3 client happy.
+        force-path-style: true
+        retention: 168h                      # keep 7 days of snapshots+WAL
+        snapshot-interval: 1h

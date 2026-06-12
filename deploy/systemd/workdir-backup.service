@@ -1,0 +1,9 @@
+[Unit]
+Description=workdir nightly state backup to R2 (secret.key, volumes, custom images)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/workdir
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/workdir-backup-state

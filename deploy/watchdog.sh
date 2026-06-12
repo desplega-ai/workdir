@@ -5,8 +5,9 @@
 # TRANSITION (ok→alert and alert→ok), so it never spams. With no webhook
 # configured it logs to the journal only.
 #
-# Config: /etc/workdir/alert.env   e.g.  WEBHOOK_URL=https://hooks.slack.com/...
-#         (Discord webhooks work too; payload carries both "text" and "content")
+# Config: /etc/workdir/alert.env — set ONE of:
+#   TELEGRAM_BOT_TOKEN=123:ABC  +  TELEGRAM_CHAT_ID=-100123   (preferred)
+#   WEBHOOK_URL=https://hooks.slack.com/...                   (Slack/Discord)
 set -u
 
 ENV_FILE=/etc/workdir/alert.env
@@ -17,6 +18,24 @@ MAX_JOURNAL_ERRORS_10M=20
 
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 WEBHOOK_URL="${WEBHOOK_URL:-}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+
+# Deliver one alert line to whichever channel is configured (Telegram preferred).
+send_alert() {
+  local msg="$1"
+  logger -t workdir-watchdog "$msg"
+  if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+    curl -fsS --max-time 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+      -d chat_id="$TELEGRAM_CHAT_ID" --data-urlencode text="$msg" >/dev/null 2>&1 \
+      || logger -t workdir-watchdog "telegram delivery failed"
+  elif [ -n "$WEBHOOK_URL" ]; then
+    local payload
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1], "content": sys.argv[1]}))' "$msg")
+    curl -fsS --max-time 10 -X POST -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL" >/dev/null 2>&1 \
+      || logger -t workdir-watchdog "webhook delivery failed"
+  fi
+}
 
 problems=()
 
@@ -66,12 +85,9 @@ old_state="$(cat "$STATE_FILE" 2>/dev/null || echo ok)"
 echo "$new_state" > "$STATE_FILE"
 
 if [ "$new_state" != "$old_state" ]; then
-  logger -t workdir-watchdog "$msg"
-  if [ -n "$WEBHOOK_URL" ]; then
-    payload=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1], "content": sys.argv[1]}))' "$msg")
-    curl -fsS --max-time 10 -X POST -H "Content-Type: application/json" -d "$payload" "$WEBHOOK_URL" >/dev/null 2>&1 \
-      || logger -t workdir-watchdog "webhook delivery failed"
-  fi
+  # Prefix recovery so it reads clearly in the channel.
+  [ "$new_state" = "ok" ] && [ "$old_state" = "alert" ] && msg="✅ RECOVERED — workdir node: all checks passing"
+  send_alert "$msg"
 else
   # steady state: journal breadcrumb only when unhealthy
   [ "$new_state" = "alert" ] && logger -t workdir-watchdog "still alerting: $msg"

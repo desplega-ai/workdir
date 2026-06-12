@@ -1,0 +1,16 @@
+[Unit]
+Description=Litestream — continuous SQLite replication of the workdir DB to R2
+After=network-online.target workdir.service
+Wants=network-online.target
+# Don't run without the data dir mounted (loopback XFS).
+RequiresMountsFor=/var/lib/workdir
+
+[Service]
+# R2 credentials + bucket are interpolated into the config from this env file.
+EnvironmentFile=/etc/workdir/backup.env
+ExecStart=/usr/local/bin/litestream replicate -config /etc/litestream.yml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
