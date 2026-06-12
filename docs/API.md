@@ -78,7 +78,7 @@ rejected with `400 bad_request`:
 | Knob | Allowed | Default |
 |---|---|---|
 | `cpu` | 0.5, 1, 2, 4 | 1 |
-| `memory_mb` | 1024, 2048, 4096, 8192, 16384 | 2048 |
+| `memory_mb` | 512, 1024, 2048, 4096, 8192, 16384 | 2048 |
 | `disk_gb` | 8, 16, 32, 64 | 8 |
 | `image` | base, node-python, browser, heavy-build, custom/… | base |
 | `auto_stop_seconds` | 30–3600 | 120 |

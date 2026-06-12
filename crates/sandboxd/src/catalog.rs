@@ -64,7 +64,9 @@ impl ImageClass {
     /// Minimum resources the image is allowed to run with (spec §10.1, §12.1).
     pub fn minimum_resources(&self) -> Resources {
         match self {
-            ImageClass::Base => Resources { cpu: 1.0, memory_mb: 2048, disk_gb: 8 },
+            // Base can run as small as 512 MB for light, fast-standby workloads
+            // (the default cheap path is still 2 GB / 1.0 unit).
+            ImageClass::Base => Resources { cpu: 0.5, memory_mb: 512, disk_gb: 8 },
             ImageClass::NodePython => Resources { cpu: 1.0, memory_mb: 2048, disk_gb: 16 },
             ImageClass::Browser => Resources { cpu: 2.0, memory_mb: 4096, disk_gb: 16 },
             ImageClass::HeavyBuild => Resources { cpu: 2.0, memory_mb: 8192, disk_gb: 32 },
