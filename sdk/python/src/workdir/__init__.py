@@ -1,8 +1,8 @@
-"""Minimal Python SDK for sandboxd (spec §20).
+"""Minimal Python SDK for workdir.
 
 The default path is one call::
 
-    from sandbox_sdk import Client
+    from workdir import Client
     client = Client("https://api.sandboxes.example.com", api_key="sk_live_...")
     sandbox = client.sandboxes.create()          # cheap default path
     print(sandbox.exec("echo ok").stdout)
@@ -42,6 +42,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Optional
+
+__all__ = ["Client", "ExecResult", "Sandbox", "SandboxError"]
 
 
 class SandboxError(Exception):
@@ -240,8 +242,8 @@ class Client:
 
 if __name__ == "__main__":
     import os
-    client = Client(os.environ.get("SANDBOXD_URL", "http://127.0.0.1:8080"),
-                    os.environ["SANDBOXD_KEY"])
+    client = Client(os.environ.get("WORKDIR_URL", "http://127.0.0.1:8080"),
+                    os.environ["WORKDIR_API_KEY"])
     sb = client.sandboxes.create()
     print("created", sb.id, "boot_path", sb.boot_path, "boot_ms", sb.timings.get("boot_ms"))
     print("echo:", sb.exec("echo ok").stdout.strip())

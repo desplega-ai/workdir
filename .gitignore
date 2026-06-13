@@ -59,6 +59,7 @@ tmp/
 __pycache__/
 *.py[cod]
 *.egg-info/
+sdk/python/dist/
 .venv/
 venv/
 .pytest_cache/

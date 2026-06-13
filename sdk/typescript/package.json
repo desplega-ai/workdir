@@ -1,0 +1,42 @@
+{
+  "name": "@mv37/workdir",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for workdir",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mv37-org/workdir.git",
+    "directory": "sdk/typescript"
+  },
+  "homepage": "https://github.com/mv37-org/workdir#readme",
+  "bugs": {
+    "url": "https://github.com/mv37-org/workdir/issues"
+  },
+  "license": "AGPL-3.0-only",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}

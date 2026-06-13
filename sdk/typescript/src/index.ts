@@ -1,5 +1,5 @@
 /**
- * Minimal TypeScript SDK for sandboxd (spec §20). Uses the global `fetch`
+ * Minimal TypeScript SDK for workdir. Uses the global `fetch`
  * (Node 18+, Deno, Bun, browsers). Zero dependencies.
  *
  * The default path is one call:

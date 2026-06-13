@@ -15,7 +15,7 @@ Every sandbox is a [Firecracker](https://firecracker-microvm.github.io/) microVM
 ---
 
 ```ts
-import { Client } from "@workdir/sdk";
+import { Client } from "@mv37/workdir";
 
 const workdir = new Client("https://api.workdir.dev", process.env.WORKDIR_API_KEY);
 
@@ -68,7 +68,7 @@ bash examples/serve_lan.sh          # serves on your LAN, prints URL + admin key
 ### Default sandbox
 
 ```python
-# pip install workdir
+# pip install mv37-workdir
 from workdir import Client
 
 wd = Client("https://api.workdir.dev", api_key="...")
@@ -110,8 +110,8 @@ Full reference: **[docs/FEATURES.md](docs/FEATURES.md)** and **[docs/API.md](doc
 
 | Language | Install | Source |
 |---|---|---|
-| TypeScript / JS | `npm i @workdir/sdk` | [sdk/typescript](sdk/typescript/sandbox.ts) |
-| Python | `pip install workdir` | [sdk/python](sdk/python/sandbox_sdk.py) |
+| TypeScript / JS | `npm i @mv37/workdir` | [sdk/typescript](sdk/typescript/src/index.ts) |
+| Python | `pip install mv37-workdir` | [sdk/python](sdk/python/src/workdir/__init__.py) |
 
 Or just use the REST API directly — it's small and documented in [docs/API.md](docs/API.md).
 
