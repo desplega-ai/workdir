@@ -9,6 +9,8 @@ Every sandbox is a [Firecracker](https://firecracker-microvm.github.io/) microVM
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Cloud](https://img.shields.io/badge/cloud-workdir.dev-black.svg)](https://workdir.dev)
+[![npm](https://img.shields.io/npm/v/%40mv37%2Fworkdir?label=npm)](https://www.npmjs.com/package/@mv37/workdir)
+[![PyPI](https://img.shields.io/pypi/v/mv37-workdir?label=pypi)](https://pypi.org/project/mv37-workdir/)
 
 </div>
 
