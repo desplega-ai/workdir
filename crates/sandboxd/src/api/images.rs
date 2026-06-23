@@ -30,7 +30,10 @@ pub async fn list(
             })
         })
         .collect();
-    let custom = state.store.list_images_for_org(&ctx.org_id).map_err(ApiError::Internal)?;
+    let custom = state
+        .store
+        .list_images_for_org(&ctx.org_id)
+        .map_err(ApiError::Internal)?;
     let custom_views: Vec<Value> = custom.iter().map(image_view).collect();
     Ok(Json(json!({ "curated": curated, "custom": custom_views })))
 }
@@ -41,18 +44,22 @@ pub async fn create(
     Json(req): Json<CreateImageRequest>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     if !req.name.starts_with("custom/") {
-        return Err(ApiError::BadRequest("image name must be 'custom/<org>/<name>'".into()));
+        return Err(ApiError::BadRequest(
+            "image name must be 'custom/<org>/<name>'".into(),
+        ));
     }
     let source = match req.source.source_type.as_str() {
         "dockerfile" => {
-            let ctx_url = req
-                .source
-                .context_url
-                .clone()
-                .ok_or_else(|| ApiError::BadRequest("dockerfile source needs context_url".into()))?;
+            let ctx_url = req.source.context_url.clone().ok_or_else(|| {
+                ApiError::BadRequest("dockerfile source needs context_url".into())
+            })?;
             ImageSource::Dockerfile {
                 context_url: ctx_url,
-                dockerfile: req.source.dockerfile.clone().unwrap_or_else(|| "Dockerfile".into()),
+                dockerfile: req
+                    .source
+                    .dockerfile
+                    .clone()
+                    .unwrap_or_else(|| "Dockerfile".into()),
             }
         }
         "oci" => {
@@ -63,7 +70,11 @@ pub async fn create(
                 .ok_or_else(|| ApiError::BadRequest("oci source needs image_ref".into()))?;
             ImageSource::Oci { image_ref: r }
         }
-        other => return Err(ApiError::BadRequest(format!("unknown source type '{other}'"))),
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "unknown source type '{other}'"
+            )))
+        }
     };
 
     let now = Utc::now();

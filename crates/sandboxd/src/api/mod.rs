@@ -28,14 +28,29 @@ use serde_json::json;
 pub fn router(state: AppState) -> Router {
     let v1 = Router::new()
         .route("/sandboxes", post(sandboxes::create).get(sandboxes::list))
-        .route("/sandboxes/:id", get(sandboxes::get).delete(sandboxes::delete))
+        .route(
+            "/sandboxes/:id",
+            get(sandboxes::get).delete(sandboxes::delete),
+        )
         .route("/sandboxes/:id/exec", post(sandboxes::exec))
         .route("/sandboxes/:id/metrics", get(sandboxes::metrics))
         .route("/sandboxes/:id/pty", get(pty::pty_ws))
-        .route("/sandboxes/:id/files", get(sandboxes::read_file).put(sandboxes::write_file))
-        .route("/sandboxes/:id/ports/:port/expose", post(sandboxes::expose_port))
-        .route("/sandboxes/:id/browser", post(sandboxes::browser_get).get(sandboxes::browser_get))
-        .route("/sandboxes/:id/browser/screenshot", get(sandboxes::browser_screenshot))
+        .route(
+            "/sandboxes/:id/files",
+            get(sandboxes::read_file).put(sandboxes::write_file),
+        )
+        .route(
+            "/sandboxes/:id/ports/:port/expose",
+            post(sandboxes::expose_port),
+        )
+        .route(
+            "/sandboxes/:id/browser",
+            post(sandboxes::browser_get).get(sandboxes::browser_get),
+        )
+        .route(
+            "/sandboxes/:id/browser/screenshot",
+            get(sandboxes::browser_screenshot),
+        )
         .route("/sandboxes/:id/snapshot", post(sandboxes::snapshot))
         .route("/sandboxes/:id/fork", post(sandboxes::fork))
         .route("/sandboxes/:id/pause", post(sandboxes::pause))
@@ -57,12 +72,24 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/orgs/:org/suspend", post(admin::org_suspend))
         .route("/admin/orgs/:org/unsuspend", post(admin::org_unsuspend))
         .route("/admin/orgs/:org/secrets", get(admin::org_secrets_list))
-        .route("/admin/orgs/:org/secrets/:name", put(admin::org_secret_put).delete(admin::org_secret_delete))
+        .route(
+            "/admin/orgs/:org/secrets/:name",
+            put(admin::org_secret_put).delete(admin::org_secret_delete),
+        )
         .route("/admin/orgs/:org/sandboxes", get(admin::org_sandboxes))
-        .route("/admin/orgs/:org/sandboxes/:id/stop", post(admin::org_sandbox_stop))
-        .route("/admin/orgs/:org/sandboxes/:id", delete(admin::org_sandbox_delete))
+        .route(
+            "/admin/orgs/:org/sandboxes/:id/stop",
+            post(admin::org_sandbox_stop),
+        )
+        .route(
+            "/admin/orgs/:org/sandboxes/:id",
+            delete(admin::org_sandbox_delete),
+        )
         .route("/admin/orgs/:org/images", get(admin::org_images))
-        .route("/admin/orgs/:org/images/:id", delete(admin::org_image_delete))
+        .route(
+            "/admin/orgs/:org/images/:id",
+            delete(admin::org_image_delete),
+        )
         .route("/admin/keys", post(admin::register_key))
         .route("/admin/keys/:hash", delete(admin::revoke_key))
         .route("/benchmarks", get(usage::benchmarks))
@@ -75,8 +102,14 @@ pub fn router(state: AppState) -> Router {
         // Control-plane↔worker RPC (token-authed; disabled without node.rpc_token).
         .nest("/internal", internal::router(state.clone()))
         // Path-based preview for environments without wildcard DNS (dev/tests).
-        .route("/_preview/:id/:port", get(preview::preview_path).post(preview::preview_path))
-        .route("/_preview/:id/:port/*rest", get(preview::preview_path).post(preview::preview_path))
+        .route(
+            "/_preview/:id/:port",
+            get(preview::preview_path).post(preview::preview_path),
+        )
+        .route(
+            "/_preview/:id/:port/*rest",
+            get(preview::preview_path).post(preview::preview_path),
+        )
         // Host-routed preview (`<id>-<port>.domain`) lands here.
         .fallback(preview::preview_host)
         .with_state(state)
@@ -100,20 +133,14 @@ async fn auth_mw(State(state): State<AppState>, mut req: Request, next: Next) ->
             req.extensions_mut().insert(ctx);
             next.run(req).await
         }
-        AuthOutcome::Suspended => {
-            ApiError::Forbidden("org suspended".into()).into_response()
-        }
+        AuthOutcome::Suspended => ApiError::Forbidden("org suspended".into()).into_response(),
         AuthOutcome::Missing | AuthOutcome::Invalid => ApiError::Unauthorized.into_response(),
     }
 }
 
 /// Load a sandbox and enforce ownership. Returns NotFound (not Forbidden) for
 /// other orgs' sandboxes so existence is not leaked.
-pub fn load_owned(
-    state: &AppState,
-    ctx: &AuthContext,
-    id: &str,
-) -> Result<Sandbox, ApiError> {
+pub fn load_owned(state: &AppState, ctx: &AuthContext, id: &str) -> Result<Sandbox, ApiError> {
     let sb = state
         .store
         .get_sandbox(id)

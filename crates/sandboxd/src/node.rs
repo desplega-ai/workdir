@@ -11,8 +11,8 @@ use crate::catalog;
 use crate::hotpool::{HotPools, PoolStatus, ShapeKey};
 use crate::knobs::Resources;
 use crate::runtime::{
-    DirEntry, ExecRequest, ExecResult, PtySession, Runtime, SnapshotArtifact, VmInstance, VmMetrics,
-    VmSpec, WarmVm,
+    DirEntry, ExecRequest, ExecResult, PtySession, Runtime, SnapshotArtifact, VmInstance,
+    VmMetrics, VmSpec, WarmVm,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -69,7 +69,11 @@ pub struct LocalNode {
 
 impl LocalNode {
     pub fn new(node_id: impl Into<String>, runtime: Arc<dyn Runtime>) -> LocalNode {
-        LocalNode { node_id: node_id.into(), runtime, hotpools: Mutex::new(HotPools::new()) }
+        LocalNode {
+            node_id: node_id.into(),
+            runtime,
+            hotpools: Mutex::new(HotPools::new()),
+        }
     }
 
     pub fn runtime(&self) -> Arc<dyn Runtime> {
@@ -81,7 +85,11 @@ impl LocalNode {
     pub async fn configure_default_pools(&self, base_target: u32) {
         let mut pools = self.hotpools.lock().await;
         for (image_key, shape, target) in catalog::default_hot_pools() {
-            let t = if image_key == "base" { base_target } else { target };
+            let t = if image_key == "base" {
+                base_target
+            } else {
+                target
+            };
             pools.set_target(ShapeKey::new(image_key, &shape), t);
         }
     }
@@ -151,7 +159,11 @@ impl LocalNode {
             org_id: "pool".to_string(),
             image_key: image_key.to_string(),
             image_ref: image_key.to_string(),
-            resources: Resources { cpu, memory_mb, disk_gb },
+            resources: Resources {
+                cpu,
+                memory_mb,
+                disk_gb,
+            },
             env: Default::default(),
             secret_env: Default::default(),
             browser: None,

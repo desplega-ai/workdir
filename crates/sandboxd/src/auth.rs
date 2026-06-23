@@ -48,7 +48,10 @@ pub fn authenticate(store: &Store, bearer: Option<&str>) -> AuthOutcome {
         // an org (or the admin's own org) would lock the operator out of the
         // very endpoint that lifts the suspension.
         Ok(Some(org)) if org.status == OrgStatus::Suspended && !key.admin => AuthOutcome::Suspended,
-        Ok(Some(_)) => AuthOutcome::Ok(AuthContext { org_id: key.org_id, admin: key.admin }),
+        Ok(Some(_)) => AuthOutcome::Ok(AuthContext {
+            org_id: key.org_id,
+            admin: key.admin,
+        }),
         _ => AuthOutcome::Invalid,
     }
 }
@@ -114,7 +117,10 @@ mod tests {
             }
             other => panic!("expected Ok, got {other:?}"),
         }
-        assert!(matches!(authenticate(&store, Some("nope")), AuthOutcome::Invalid));
+        assert!(matches!(
+            authenticate(&store, Some("nope")),
+            AuthOutcome::Invalid
+        ));
         assert!(matches!(authenticate(&store, None), AuthOutcome::Missing));
     }
 }

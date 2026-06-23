@@ -42,7 +42,10 @@ pub async fn create_sandbox(
     if !ctx.admin {
         // Live balance (includes open intervals) so a long-running sandbox can't
         // keep an org "in credit" forever while it bills (review #8).
-        let intervals = state.store.usage_for_org(&ctx.org_id).map_err(ApiError::Internal)?;
+        let intervals = state
+            .store
+            .usage_for_org(&ctx.org_id)
+            .map_err(ApiError::Internal)?;
         if crate::usage::live_balance_usd(&org, &intervals, Utc::now()) <= 0.0 {
             return Err(ApiError::Forbidden("no prepaid credits remaining".into()));
         }
@@ -72,7 +75,8 @@ pub async fn create_sandbox(
     let resources = Resources::validate(&req.resources.clone().unwrap_or_default())
         .map_err(ApiError::BadRequest)?;
     enforce_minimums(&class, &resources)?;
-    let auto_stop_seconds = validate_auto_stop(req.auto_stop_seconds).map_err(ApiError::BadRequest)?;
+    let auto_stop_seconds =
+        validate_auto_stop(req.auto_stop_seconds).map_err(ApiError::BadRequest)?;
 
     // --- browser config (spec §12) --------------------------------------
     let browser = req.browser.clone().filter(|b| b.enabled);
@@ -140,8 +144,11 @@ pub async fn create_sandbox(
         is_custom_image: class.is_custom(),
     };
     let snapshots = gather_node_snapshots(state, &placement_req).await?;
-    let placement = scheduler::select(&placement_req, &snapshots)
-        .map_err(|r| ApiError::NoCapacity { reason: r.reason, detail: r.detail })?;
+    let placement =
+        scheduler::select(&placement_req, &snapshots).map_err(|r| ApiError::NoCapacity {
+            reason: r.reason,
+            detail: r.detail,
+        })?;
     // The chosen node's data-plane client: local if it's us, else a remote
     // worker driven over its /internal API (multi-node).
     let node = state.node_for(&placement.node_id);
@@ -216,7 +223,9 @@ pub async fn create_sandbox(
     // Phase 4 — will carry this in the node heartbeat).
     let snapshot_available = volumes.is_empty()
         && placement.node_id == state.local_node_id
-        && state.local.golden_snapshot_available(class.key(), &resources);
+        && state
+            .local
+            .golden_snapshot_available(class.key(), &resources);
     let instance = match node.place(&spec, snapshot_available).await {
         Ok(i) => i,
         Err(e) => {
@@ -308,10 +317,22 @@ async fn run_startup(state: &AppState, sb: &mut Sandbox, recipe: &StartupRecipe)
         let t = Instant::now();
         let cmd = format!(
             "git clone --depth {} --branch {} {} . 2>&1 || git clone --depth {} {} .",
-            git.depth, git.r#ref, shell_arg(&git.url), git.depth, shell_arg(&git.url)
+            git.depth,
+            git.r#ref,
+            shell_arg(&git.url),
+            git.depth,
+            shell_arg(&git.url)
         );
         let res = node
-            .exec(&handle, &ExecRequest { cmd, cwd: None, env: BTreeMap::new(), background: false })
+            .exec(
+                &handle,
+                &ExecRequest {
+                    cmd,
+                    cwd: None,
+                    env: BTreeMap::new(),
+                    background: false,
+                },
+            )
             .await;
         sb.timings.git_ms = t.elapsed().as_millis() as u64;
         if let Ok(r) = &res {
@@ -381,12 +402,16 @@ async fn gather_node_snapshots(
         let active_count = active.len() as u32;
         let org_active_count = active.iter().filter(|s| s.org_id == req.org_id).count() as u32;
         let hot_pool_available = if node.id == state.local_node_id {
-            state.local.hot_pool_available(&req.image_key, &req.resources).await
+            state
+                .local
+                .hot_pool_available(&req.image_key, &req.resources)
+                .await
         } else {
             0
         };
         // Synthetic pressure from occupancy (real nodes export measured values).
-        let occupancy = (used_memory_gb / node.capacity().usable_for_sandboxes_gb.max(1.0)).clamp(0.0, 1.0);
+        let occupancy =
+            (used_memory_gb / node.capacity().usable_for_sandboxes_gb.max(1.0)).clamp(0.0, 1.0);
         out.push(NodeSnapshot {
             node: node.clone(),
             used_memory_gb,
@@ -395,7 +420,9 @@ async fn gather_node_snapshots(
             hot_pool_available,
             image_cached: !req.is_custom_image, // curated always cached locally
             snapshot_available: if node.id == state.local_node_id {
-                state.local.golden_snapshot_available(&req.image_key, &req.resources)
+                state
+                    .local
+                    .golden_snapshot_available(&req.image_key, &req.resources)
             } else {
                 false // remote nodes report theirs once worker RPC lands (Phase 4)
             },
@@ -405,7 +432,8 @@ async fn gather_node_snapshots(
             // Measured-memory overcommit (opt-in): only the local node can
             // report its own MemAvailable today; workers will carry it in their
             // heartbeat once worker RPC lands (Phase 4).
-            measured_available_gb: if state.cfg.capacity.overcommit && node.id == state.local_node_id
+            measured_available_gb: if state.cfg.capacity.overcommit
+                && node.id == state.local_node_id
             {
                 crate::capacity::host_available_memory_gb()
             } else {
@@ -432,7 +460,9 @@ fn resolve_secrets(
                 .store
                 .get_secret(&ctx.org_id, name)
                 .map_err(ApiError::Internal)?
-                .ok_or_else(|| ApiError::BadRequest(format!("secret '{name}' is not defined for this org")))?;
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("secret '{name}' is not defined for this org"))
+                })?;
             let value = crate::secrets::decrypt(&state.secret_key, &rec)
                 .map_err(|e| ApiError::Internal(anyhow::anyhow!("decrypt secret '{name}': {e}")))?;
             values.insert(name.clone(), value);
@@ -459,13 +489,19 @@ fn build_ephemeral_files(files: Option<&[EphemeralFile]>) -> ApiResult<Vec<(Stri
 fn validate_mounts(mounts: &[MountSpec]) -> ApiResult<()> {
     for m in mounts {
         if m.kind != "s3" {
-            return Err(ApiError::BadRequest(format!("unsupported mount type '{}' (only 's3')", m.kind)));
+            return Err(ApiError::BadRequest(format!(
+                "unsupported mount type '{}' (only 's3')",
+                m.kind
+            )));
         }
         if m.bucket.is_empty() {
             return Err(ApiError::BadRequest("mount requires a bucket".into()));
         }
         if !m.mount_path.starts_with('/') {
-            return Err(ApiError::BadRequest(format!("mount_path '{}' must be absolute", m.mount_path)));
+            return Err(ApiError::BadRequest(format!(
+                "mount_path '{}' must be absolute",
+                m.mount_path
+            )));
         }
     }
     Ok(())
@@ -483,15 +519,27 @@ fn parse_volume_attaches(reqs: Option<&[VolumeAttachRequest]>) -> ApiResult<Vec<
     let mut seen_vols = std::collections::BTreeSet::new();
     for r in reqs {
         if !r.mount_path.starts_with('/') {
-            return Err(ApiError::BadRequest(format!("volume mount_path '{}' must be absolute", r.mount_path)));
+            return Err(ApiError::BadRequest(format!(
+                "volume mount_path '{}' must be absolute",
+                r.mount_path
+            )));
         }
         if !seen_paths.insert(r.mount_path.clone()) {
-            return Err(ApiError::BadRequest(format!("duplicate volume mount_path '{}'", r.mount_path)));
+            return Err(ApiError::BadRequest(format!(
+                "duplicate volume mount_path '{}'",
+                r.mount_path
+            )));
         }
         if !seen_vols.insert(r.volume_id.clone()) {
-            return Err(ApiError::BadRequest(format!("volume '{}' attached twice", r.volume_id)));
+            return Err(ApiError::BadRequest(format!(
+                "volume '{}' attached twice",
+                r.volume_id
+            )));
         }
-        out.push(VolumeAttach { volume_id: r.volume_id.clone(), mount_path: r.mount_path.clone() });
+        out.push(VolumeAttach {
+            volume_id: r.volume_id.clone(),
+            mount_path: r.mount_path.clone(),
+        });
     }
     Ok(out)
 }
@@ -506,7 +554,11 @@ fn reserve_volumes(
 ) -> ApiResult<()> {
     let mut reserved: Vec<Volume> = Vec::new();
     for va in volumes {
-        let mut v = match state.store.get_volume(&va.volume_id).map_err(ApiError::Internal)? {
+        let mut v = match state
+            .store
+            .get_volume(&va.volume_id)
+            .map_err(ApiError::Internal)?
+        {
             Some(v) if v.org_id == org_id => v,
             _ => {
                 roll_back_reservations(state, &reserved);
@@ -557,7 +609,10 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     for (i, &c) in B64.iter().enumerate() {
         table[c as usize] = i as u8;
     }
-    let clean: Vec<u8> = input.bytes().filter(|&b| b != b'=' && !b.is_ascii_whitespace()).collect();
+    let clean: Vec<u8> = input
+        .bytes()
+        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
+        .collect();
     let mut out = Vec::new();
     for chunk in clean.chunks(4) {
         let mut acc = 0u32;
@@ -580,7 +635,10 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
 }
 
 fn org_active_units(state: &AppState, org_id: &str) -> ApiResult<f64> {
-    let sandboxes = state.store.list_sandboxes_for_org(org_id).map_err(ApiError::Internal)?;
+    let sandboxes = state
+        .store
+        .list_sandboxes_for_org(org_id)
+        .map_err(ApiError::Internal)?;
     Ok(sandboxes
         .iter()
         .filter(|s| s.state.is_active())
@@ -643,9 +701,14 @@ pub async fn stop_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox> {
         .map_err(ApiError::Internal)?
     {
         CasOutcome::Updated(s) => s,
-        CasOutcome::Conflict(State::Stopped) | CasOutcome::Conflict(State::Stopping) => return Ok(sb),
+        CasOutcome::Conflict(State::Stopped) | CasOutcome::Conflict(State::Stopping) => {
+            return Ok(sb)
+        }
         CasOutcome::Conflict(other) => {
-            return Err(ApiError::Conflict(format!("cannot stop from {}", other.as_str())))
+            return Err(ApiError::Conflict(format!(
+                "cannot stop from {}",
+                other.as_str()
+            )))
         }
         CasOutcome::NotFound => return Err(ApiError::NotFound(format!("sandbox {}", sb.id))),
     };
@@ -657,8 +720,15 @@ pub async fn stop_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox> {
     let handle = updated.runtime_handle.clone().unwrap_or_default();
     let node = state.node_for(updated.node_id.as_deref().unwrap_or(""));
     let pause_result = node.pause(&handle, updated.snapshot_enabled).await;
-    let next = if pause_result.is_ok() { State::Stopped } else { State::Failed };
-    let err = pause_result.as_ref().err().map(|e| format!("pause failed: {e}"));
+    let next = if pause_result.is_ok() {
+        State::Stopped
+    } else {
+        State::Failed
+    };
+    let err = pause_result
+        .as_ref()
+        .err()
+        .map(|e| format!("pause failed: {e}"));
     let final_sb = state
         .store
         .cas_sandbox(&updated.id, &[State::Stopping], |s| {
@@ -692,7 +762,10 @@ pub async fn standby_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox
         | CasOutcome::Conflict(State::Stopped)
         | CasOutcome::Conflict(State::Stopping) => return Ok(sb),
         CasOutcome::Conflict(other) => {
-            return Err(ApiError::Conflict(format!("cannot standby from {}", other.as_str())))
+            return Err(ApiError::Conflict(format!(
+                "cannot standby from {}",
+                other.as_str()
+            )))
         }
         CasOutcome::NotFound => return Err(ApiError::NotFound(format!("sandbox {}", sb.id))),
     };
@@ -737,7 +810,10 @@ pub async fn resume_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<Sandbox>
     {
         CasOutcome::Updated(s) => s,
         CasOutcome::Conflict(other) => {
-            return Err(ApiError::Conflict(format!("cannot resume from {}", other.as_str())))
+            return Err(ApiError::Conflict(format!(
+                "cannot resume from {}",
+                other.as_str()
+            )))
         }
         CasOutcome::NotFound => return Err(ApiError::NotFound(format!("sandbox {}", sb.id))),
     };
@@ -795,15 +871,28 @@ pub async fn delete_sandbox(state: &AppState, sb: Sandbox) -> ApiResult<()> {
         .store
         .cas_sandbox(
             &sb.id,
-            &[State::Creating, State::Running, State::Resuming, State::Stopping, State::Stopped, State::Standby, State::Failed],
+            &[
+                State::Creating,
+                State::Running,
+                State::Resuming,
+                State::Stopping,
+                State::Stopped,
+                State::Standby,
+                State::Failed,
+            ],
             |s| s.state = State::Deleting,
         )
         .map_err(ApiError::Internal)?
     {
         CasOutcome::Updated(s) => s,
-        CasOutcome::Conflict(State::Deleting) | CasOutcome::Conflict(State::Deleted) => return Ok(()),
+        CasOutcome::Conflict(State::Deleting) | CasOutcome::Conflict(State::Deleted) => {
+            return Ok(())
+        }
         CasOutcome::Conflict(other) => {
-            return Err(ApiError::Conflict(format!("cannot delete from {}", other.as_str())))
+            return Err(ApiError::Conflict(format!(
+                "cannot delete from {}",
+                other.as_str()
+            )))
         }
         CasOutcome::NotFound => return Err(ApiError::NotFound(format!("sandbox {}", sb.id))),
     };
@@ -853,7 +942,10 @@ pub async fn snapshot_sandbox(state: &AppState, sb: &Sandbox) -> ApiResult<Snaps
         storage_bytes: artifact.storage_bytes,
         handle: artifact.handle,
     };
-    state.store.put_snapshot(&snap).map_err(ApiError::Internal)?;
+    state
+        .store
+        .put_snapshot(&snap)
+        .map_err(ApiError::Internal)?;
     Ok(snap)
 }
 
@@ -862,7 +954,11 @@ pub async fn snapshot_sandbox(state: &AppState, sb: &Sandbox) -> ApiResult<Snaps
 /// same image and shape, its own id and billing, colocated on the parent's node
 /// for artifact locality. "Nearly free once snapshots are solid": its boot path
 /// is [`BootPath::Fork`] and its latency tracks resume, not cold boot.
-pub async fn fork_sandbox(state: &AppState, ctx: &AuthContext, parent: Sandbox) -> ApiResult<Sandbox> {
+pub async fn fork_sandbox(
+    state: &AppState,
+    ctx: &AuthContext,
+    parent: Sandbox,
+) -> ApiResult<Sandbox> {
     let wall_start = Instant::now();
 
     // Never copy resident secrets into the child (review M3).
@@ -876,13 +972,17 @@ pub async fn fork_sandbox(state: &AppState, ctx: &AuthContext, parent: Sandbox) 
     // worse, share writable block devices with the parent. Refuse.
     if !parent.volumes.is_empty() {
         return Err(ApiError::Conflict(
-            "cannot fork a sandbox with attached volumes; volumes are exclusive to one sandbox".into(),
+            "cannot fork a sandbox with attached volumes; volumes are exclusive to one sandbox"
+                .into(),
         ));
     }
     // The parent must be live; a standby parent transparently auto-resumes first.
     let parent = ensure_running(state, parent).await?;
     if parent.state != State::Running {
-        return Err(ApiError::Conflict(format!("cannot fork a {} sandbox", parent.state.as_str())));
+        return Err(ApiError::Conflict(format!(
+            "cannot fork a {} sandbox",
+            parent.state.as_str()
+        )));
     }
     let parent_handle = parent
         .runtime_handle
@@ -891,12 +991,19 @@ pub async fn fork_sandbox(state: &AppState, ctx: &AuthContext, parent: Sandbox) 
     let parent_node = parent.node_id.clone().unwrap_or_default();
 
     // --- org / credit admission (mirror create) -------------------------
-    let org = state.store.get_org(&ctx.org_id).map_err(ApiError::Internal)?.ok_or(ApiError::Unauthorized)?;
+    let org = state
+        .store
+        .get_org(&ctx.org_id)
+        .map_err(ApiError::Internal)?
+        .ok_or(ApiError::Unauthorized)?;
     if org.status == OrgStatus::Suspended {
         return Err(ApiError::Forbidden("org suspended".into()));
     }
     if !ctx.admin {
-        let intervals = state.store.usage_for_org(&ctx.org_id).map_err(ApiError::Internal)?;
+        let intervals = state
+            .store
+            .usage_for_org(&ctx.org_id)
+            .map_err(ApiError::Internal)?;
         if crate::usage::live_balance_usd(&org, &intervals, Utc::now()) <= 0.0 {
             return Err(ApiError::Forbidden("no prepaid credits remaining".into()));
         }
@@ -927,13 +1034,22 @@ pub async fn fork_sandbox(state: &AppState, ctx: &AuthContext, parent: Sandbox) 
     // Reuse the scheduler's admission ceiling, restricted to the parent's node
     // (fork colocates with the parent so it can copy the snapshot locally).
     let snapshots = gather_node_snapshots(state, &placement_req).await?;
-    let here: Vec<NodeSnapshot> = snapshots.into_iter().filter(|s| s.node.id == parent_node).collect();
-    scheduler::select(&placement_req, &here)
-        .map_err(|r| ApiError::NoCapacity { reason: r.reason, detail: r.detail })?;
+    let here: Vec<NodeSnapshot> = snapshots
+        .into_iter()
+        .filter(|s| s.node.id == parent_node)
+        .collect();
+    scheduler::select(&placement_req, &here).map_err(|r| ApiError::NoCapacity {
+        reason: r.reason,
+        detail: r.detail,
+    })?;
 
     // --- build child spec + reserve a creating record -------------------
     let child_id = ids::sandbox_id();
-    let env = parent.startup.as_ref().map(|s| s.env.clone()).unwrap_or_default();
+    let env = parent
+        .startup
+        .as_ref()
+        .map(|s| s.env.clone())
+        .unwrap_or_default();
     let child_spec = VmSpec {
         sandbox_id: child_id.clone(),
         org_id: ctx.org_id.clone(),
@@ -976,7 +1092,10 @@ pub async fn fork_sandbox(state: &AppState, ctx: &AuthContext, parent: Sandbox) 
         updated_at: now,
         last_active_at: now,
     };
-    state.store.put_sandbox(&child).map_err(ApiError::Internal)?;
+    state
+        .store
+        .put_sandbox(&child)
+        .map_err(ApiError::Internal)?;
     drop(admission_guard);
 
     let node = state.node_for(&parent_node);
@@ -998,7 +1117,10 @@ pub async fn fork_sandbox(state: &AppState, ctx: &AuthContext, parent: Sandbox) 
     child.timings.total_ms = wall_start.elapsed().as_millis() as u64;
     child.updated_at = Utc::now();
     child.last_active_at = Utc::now();
-    state.store.put_sandbox(&child).map_err(ApiError::Internal)?;
+    state
+        .store
+        .put_sandbox(&child)
+        .map_err(ApiError::Internal)?;
     open_usage(state, &child);
     Ok(child)
 }

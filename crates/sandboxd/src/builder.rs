@@ -85,9 +85,15 @@ async fn build_inner(state: &AppState, image_id: &str, log: &mut String) -> Resu
         .flatten()
         .context("image record disappeared")?;
 
-    sh(state, image_id, log, "docker available", "docker version --format {{.Server.Version}}")
-        .await
-        .context("the node's image builder needs the docker CLI (the installer ships it)")?;
+    sh(
+        state,
+        image_id,
+        log,
+        "docker available",
+        "docker version --format {{.Server.Version}}",
+    )
+    .await
+    .context("the node's image builder needs the docker CLI (the installer ships it)")?;
 
     let work = state.cfg.server.data_dir.join("builds").join(image_id);
     let rootfs = work.join("rootfs");
@@ -96,33 +102,84 @@ async fn build_inner(state: &AppState, image_id: &str, log: &mut String) -> Resu
     // 1. Materialize the container image to export.
     let export_ref = match &img.source {
         ImageSource::Oci { image_ref } => {
-            sh(state, image_id, log, &format!("pull {image_ref}"), &format!("docker pull {}", q(image_ref))).await?;
+            sh(
+                state,
+                image_id,
+                log,
+                &format!("pull {image_ref}"),
+                &format!("docker pull {}", q(image_ref)),
+            )
+            .await?;
             image_ref.clone()
         }
-        ImageSource::Dockerfile { context_url, dockerfile } => {
+        ImageSource::Dockerfile {
+            context_url,
+            dockerfile,
+        } => {
             let ctx = work.join("ctx");
             std::fs::create_dir_all(&ctx).context("create context dir")?;
             let tarball = work.join("context.tar");
-            sh(state, image_id, log, "fetch build context", &format!("curl -fsSL -o {} {}", q(&tarball.to_string_lossy()), q(context_url))).await?;
-            sh(state, image_id, log, "unpack build context", &format!("tar -xaf {} -C {}", q(&tarball.to_string_lossy()), q(&ctx.to_string_lossy()))).await?;
+            sh(
+                state,
+                image_id,
+                log,
+                "fetch build context",
+                &format!(
+                    "curl -fsSL -o {} {}",
+                    q(&tarball.to_string_lossy()),
+                    q(context_url)
+                ),
+            )
+            .await?;
+            sh(
+                state,
+                image_id,
+                log,
+                "unpack build context",
+                &format!(
+                    "tar -xaf {} -C {}",
+                    q(&tarball.to_string_lossy()),
+                    q(&ctx.to_string_lossy())
+                ),
+            )
+            .await?;
             // GitHub-style archives nest everything under one top-level dir.
             let build_dir = single_subdir(&ctx).unwrap_or(ctx);
             let tag = format!("workdir-build-{image_id}");
-            sh(state, image_id, log, "docker build", &format!(
-                "docker build -f {} -t {} {}",
-                q(&build_dir.join(dockerfile).to_string_lossy()),
-                q(&tag),
-                q(&build_dir.to_string_lossy()),
-            ))
+            sh(
+                state,
+                image_id,
+                log,
+                "docker build",
+                &format!(
+                    "docker build -f {} -t {} {}",
+                    q(&build_dir.join(dockerfile).to_string_lossy()),
+                    q(&tag),
+                    q(&build_dir.to_string_lossy()),
+                ),
+            )
             .await?;
             tag
         }
     };
 
     // 2. Flatten it to a root filesystem (docker export = the merged layers).
-    let cid = sh_capture(&format!("docker create {}", q(&export_ref))).await.context("docker create")?;
+    let cid = sh_capture(&format!("docker create {}", q(&export_ref)))
+        .await
+        .context("docker create")?;
     let cid = cid.trim().to_string();
-    let export = sh(state, image_id, log, "export rootfs", &format!("docker export {} | tar -x -C {}", q(&cid), q(&rootfs.to_string_lossy()))).await;
+    let export = sh(
+        state,
+        image_id,
+        log,
+        "export rootfs",
+        &format!(
+            "docker export {} | tar -x -C {}",
+            q(&cid),
+            q(&rootfs.to_string_lossy())
+        ),
+    )
+    .await;
     let _ = sh_capture(&format!("docker rm {}", q(&cid))).await;
     export?;
     if let ImageSource::Dockerfile { .. } = &img.source {
@@ -137,7 +194,11 @@ async fn build_inner(state: &AppState, image_id: &str, log: &mut String) -> Resu
     //    works for glibc-based custom images).
     let static_agent = state.cfg.server.data_dir.join("sandbox-guest-agent-static");
     let dynamic_agent = state.cfg.server.data_dir.join("sandbox-guest-agent");
-    let agent_src = if static_agent.exists() { static_agent } else { dynamic_agent };
+    let agent_src = if static_agent.exists() {
+        static_agent
+    } else {
+        dynamic_agent
+    };
     if !agent_src.exists() {
         bail!("guest agent binary missing at {agent_src:?} (the installer stages it)");
     }
@@ -146,31 +207,46 @@ async fn build_inner(state: &AppState, image_id: &str, log: &mut String) -> Resu
     }
     std::fs::create_dir_all(rootfs.join("usr/local/bin")).ok();
     std::fs::create_dir_all(rootfs.join("sbin")).ok();
-    std::fs::copy(&agent_src, rootfs.join("usr/local/bin/sandbox-guest-agent")).context("inject guest agent")?;
+    std::fs::copy(&agent_src, rootfs.join("usr/local/bin/sandbox-guest-agent"))
+        .context("inject guest agent")?;
     std::fs::write(rootfs.join("sbin/sandbox-init"), CUSTOM_INIT).context("inject init")?;
     for p in ["usr/local/bin/sandbox-guest-agent", "sbin/sandbox-init"] {
-        let _ = sh_capture(&format!("chmod 755 {}", q(&rootfs.join(p).to_string_lossy()))).await;
+        let _ = sh_capture(&format!(
+            "chmod 755 {}",
+            q(&rootfs.join(p).to_string_lossy())
+        ))
+        .await;
     }
     step(state, image_id, log, "inject guest agent + init");
 
     // 4. Pack a labelled ext4. The per-VM COW copy of this file IS the
     //    sandbox's writable disk, so size it for the hint, not just content.
-    let content_mb: u64 = sh_capture(&format!("du -sm {} | cut -f1", q(&rootfs.to_string_lossy())))
-        .await
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(1024);
+    let content_mb: u64 = sh_capture(&format!(
+        "du -sm {} | cut -f1",
+        q(&rootfs.to_string_lossy())
+    ))
+    .await
+    .ok()
+    .and_then(|s| s.trim().parse().ok())
+    .unwrap_or(1024);
     let hint_gb = img.resources_hint.disk_gb.unwrap_or(0) as u64;
     let size_gb = hint_gb.max(content_mb * 13 / 10 / 1024 + 1).max(4);
     let tmp_out = work.join("rootfs.ext4");
     let f = std::fs::File::create(&tmp_out).context("create image file")?;
-    f.set_len(size_gb * 1024 * 1024 * 1024).context("size image file")?;
+    f.set_len(size_gb * 1024 * 1024 * 1024)
+        .context("size image file")?;
     drop(f);
-    sh(state, image_id, log, &format!("mkfs.ext4 ({size_gb}G, content {content_mb}MB)"), &format!(
-        "mkfs.ext4 -F -q -d {} -L wd-custom {}",
-        q(&rootfs.to_string_lossy()),
-        q(&tmp_out.to_string_lossy()),
-    ))
+    sh(
+        state,
+        image_id,
+        log,
+        &format!("mkfs.ext4 ({size_gb}G, content {content_mb}MB)"),
+        &format!(
+            "mkfs.ext4 -F -q -d {} -L wd-custom {}",
+            q(&rootfs.to_string_lossy()),
+            q(&tmp_out.to_string_lossy()),
+        ),
+    )
     .await?;
 
     // 5. Publish where the runtime resolves it (rootfs_path: name with '/'
@@ -180,19 +256,29 @@ async fn build_inner(state: &AppState, image_id: &str, log: &mut String) -> Resu
     let out_dir = state.cfg.runtime.images_dir.join("custom");
     std::fs::create_dir_all(&out_dir).context("create custom images dir")?;
     let out = out_dir.join(format!("{safe}.ext4"));
-    std::fs::rename(&tmp_out, &out).or_else(|_| std::fs::copy(&tmp_out, &out).map(|_| ())).context("publish artifact")?;
+    std::fs::rename(&tmp_out, &out)
+        .or_else(|_| std::fs::copy(&tmp_out, &out).map(|_| ()))
+        .context("publish artifact")?;
     step(state, image_id, log, &format!("publish {}", out.display()));
 
     // Sparse-aware size: what the artifact actually occupies, not its length.
     use std::os::unix::fs::MetadataExt;
-    let bytes = std::fs::metadata(&out).map(|m| m.blocks() * 512).unwrap_or(0);
+    let bytes = std::fs::metadata(&out)
+        .map(|m| m.blocks() * 512)
+        .unwrap_or(0);
     let _ = std::fs::remove_dir_all(&work);
     Ok(bytes)
 }
 
 /// Run one shell step, append its outcome (and stderr on failure) to the build
 /// log, and persist the log so `GET /v1/images/:id` shows live progress.
-async fn sh(state: &AppState, image_id: &str, log: &mut String, what: &str, cmd: &str) -> Result<()> {
+async fn sh(
+    state: &AppState,
+    image_id: &str,
+    log: &mut String,
+    what: &str,
+    cmd: &str,
+) -> Result<()> {
     let t0 = Instant::now();
     let out = tokio::process::Command::new("sh")
         .args(["-c", cmd])
@@ -208,12 +294,15 @@ async fn sh(state: &AppState, image_id: &str, log: &mut String, what: &str, cmd:
         let err = String::from_utf8_lossy(&out.stderr);
         log.push_str(&format!("[{ms:>6}ms] {what} FAILED\n{}\n", err.trim()));
         flush(state, image_id, log);
-        bail!("{what}: {}", err.lines().last().unwrap_or("(no stderr)").to_string())
+        bail!("{what}: {}", err.lines().last().unwrap_or("(no stderr)"))
     }
 }
 
 async fn sh_capture(cmd: &str) -> Result<String> {
-    let out = tokio::process::Command::new("sh").args(["-c", cmd]).output().await?;
+    let out = tokio::process::Command::new("sh")
+        .args(["-c", cmd])
+        .output()
+        .await?;
     if !out.status.success() {
         bail!("command failed: {cmd}");
     }

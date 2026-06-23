@@ -110,17 +110,29 @@ async fn do_preview(
     };
 
     if !sb.state.is_active() {
-        return (StatusCode::CONFLICT, format!("sandbox is {}", sb.state.as_str())).into_response();
+        return (
+            StatusCode::CONFLICT,
+            format!("sandbox is {}", sb.state.as_str()),
+        )
+            .into_response();
     }
 
     // Only proxy ports the sandbox actually exposed, and never the control-plane
     // port — otherwise the preview becomes an SSRF gateway to the host /
     // control plane (review H2).
     if !sb.ports.contains(&port) {
-        return (StatusCode::FORBIDDEN, format!("port {port} is not exposed by this sandbox")).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            format!("port {port} is not exposed by this sandbox"),
+        )
+            .into_response();
     }
     if port == control_plane_port(&state) {
-        return (StatusCode::FORBIDDEN, "refusing to proxy to the control-plane port").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "refusing to proxy to the control-plane port",
+        )
+            .into_response();
     }
 
     let handle = match &sb.runtime_handle {
@@ -129,7 +141,9 @@ async fn do_preview(
     };
     let upstream = match state.local.expose_port(&handle, port).await {
         Ok(addr) => addr,
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("expose_port failed: {e}")).into_response(),
+        Err(e) => {
+            return (StatusCode::BAD_GATEWAY, format!("expose_port failed: {e}")).into_response()
+        }
     };
 
     // Activity through the preview/VNC channel keeps the sandbox alive
@@ -152,7 +166,15 @@ async fn do_preview(
         Ok(b) => b,
         Err(_) => return (StatusCode::BAD_REQUEST, "body too large").into_response(),
     };
-    http_forward(&state, method, &headers, upstream, &upstream_path, body_bytes.to_vec()).await
+    http_forward(
+        &state,
+        method,
+        &headers,
+        upstream,
+        &upstream_path,
+        body_bytes.to_vec(),
+    )
+    .await
 }
 
 /// The port the control plane itself listens on (parsed from the bind address),
@@ -176,7 +198,9 @@ fn preview_authorized(state: &AppState, org_id: &str, req: &axum::extract::Reque
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .map(|s| s.to_string());
-    let query_key = Query::<PreviewAuth>::try_from_uri(req.uri()).ok().and_then(|q| q.0.key);
+    let query_key = Query::<PreviewAuth>::try_from_uri(req.uri())
+        .ok()
+        .and_then(|q| q.0.key);
     let token = bearer.or(query_key);
     match authenticate(&state.store, token.as_deref()) {
         AuthOutcome::Ok(ctx) => ctx.admin || ctx.org_id == org_id,
@@ -213,7 +237,8 @@ async fn http_forward(
         out = out.header(name, value);
     }
     let bytes = resp.bytes().await.unwrap_or_default();
-    out.body(Body::from(bytes)).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+    out.body(Body::from(bytes))
+        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {

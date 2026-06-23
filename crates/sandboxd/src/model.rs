@@ -138,7 +138,6 @@ pub enum EgressMode {
     Denylist,
 }
 
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkPolicy {
     #[serde(default)]

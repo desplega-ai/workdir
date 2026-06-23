@@ -119,13 +119,17 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(MIGRATIONS)?;
-        Ok(Store { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Store {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     pub fn open_in_memory() -> Result<Store> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(MIGRATIONS)?;
-        Ok(Store { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Store {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -137,7 +141,9 @@ impl Store {
     pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
         let conn = self.lock();
         Ok(conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| r.get(0))
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
             .optional()?)
     }
 
@@ -166,7 +172,9 @@ impl Store {
     pub fn get_org(&self, id: &str) -> Result<Option<Org>> {
         let conn = self.lock();
         let row: Option<String> = conn
-            .query_row("SELECT data FROM orgs WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row("SELECT data FROM orgs WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
             .optional()?;
         Ok(row.map(|d| serde_json::from_str(&d)).transpose()?)
     }
@@ -186,7 +194,11 @@ impl Store {
     pub fn get_api_key(&self, key_hash: &str) -> Result<Option<ApiKey>> {
         let conn = self.lock();
         let row: Option<String> = conn
-            .query_row("SELECT data FROM api_keys WHERE key_hash = ?1", params![key_hash], |r| r.get(0))
+            .query_row(
+                "SELECT data FROM api_keys WHERE key_hash = ?1",
+                params![key_hash],
+                |r| r.get(0),
+            )
             .optional()?;
         Ok(row.map(|d| serde_json::from_str(&d)).transpose()?)
     }
@@ -206,7 +218,9 @@ impl Store {
     pub fn get_node(&self, id: &str) -> Result<Option<Node>> {
         let conn = self.lock();
         let row: Option<String> = conn
-            .query_row("SELECT data FROM nodes WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row("SELECT data FROM nodes WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
             .optional()?;
         Ok(row.map(|d| serde_json::from_str(&d)).transpose()?)
     }
@@ -247,7 +261,11 @@ impl Store {
     pub fn get_sandbox(&self, id: &str) -> Result<Option<Sandbox>> {
         let conn = self.lock();
         let row: Option<String> = conn
-            .query_row("SELECT data FROM sandboxes WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT data FROM sandboxes WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
             .optional()?;
         Ok(row.map(|d| serde_json::from_str(&d)).transpose()?)
     }
@@ -263,7 +281,11 @@ impl Store {
     {
         let conn = self.lock();
         let row: Option<String> = conn
-            .query_row("SELECT data FROM sandboxes WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT data FROM sandboxes WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
             .optional()?;
         let mut sb: Sandbox = match row {
             Some(d) => serde_json::from_str(&d)?,
@@ -275,7 +297,13 @@ impl Store {
         mutate(&mut sb);
         conn.execute(
             "UPDATE sandboxes SET org_id=?2, state=?3, node_id=?4, data=?5 WHERE id=?1",
-            params![sb.id, sb.org_id, sb.state.as_str(), sb.node_id, serde_json::to_string(&sb)?],
+            params![
+                sb.id,
+                sb.org_id,
+                sb.state.as_str(),
+                sb.node_id,
+                serde_json::to_string(&sb)?
+            ],
         )?;
         Ok(CasOutcome::Updated(sb))
     }
@@ -323,8 +351,8 @@ impl Store {
 
     pub fn list_sandboxes_for_org(&self, org_id: &str) -> Result<Vec<Sandbox>> {
         let conn = self.lock();
-        let mut stmt = conn
-            .prepare("SELECT data FROM sandboxes WHERE org_id = ?1 ORDER BY created_at DESC")?;
+        let mut stmt =
+            conn.prepare("SELECT data FROM sandboxes WHERE org_id = ?1 ORDER BY created_at DESC")?;
         let rows = stmt.query_map(params![org_id], |r| r.get::<_, String>(0))?;
         let mut out = vec![];
         for r in rows {
@@ -384,7 +412,9 @@ impl Store {
     pub fn get_image(&self, id: &str) -> Result<Option<CustomImage>> {
         let conn = self.lock();
         let row: Option<String> = conn
-            .query_row("SELECT data FROM images WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row("SELECT data FROM images WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
             .optional()?;
         Ok(row.map(|d| serde_json::from_str(&d)).transpose()?)
     }
@@ -397,8 +427,12 @@ impl Store {
         };
         let conn = self.lock();
         let sql = match &version {
-            Some(_) => "SELECT data FROM images WHERE name = ?1 AND version = ?2 AND status = 'ready'",
-            None => "SELECT data FROM images WHERE name = ?1 AND status = 'ready' ORDER BY version DESC",
+            Some(_) => {
+                "SELECT data FROM images WHERE name = ?1 AND version = ?2 AND status = 'ready'"
+            }
+            None => {
+                "SELECT data FROM images WHERE name = ?1 AND status = 'ready' ORDER BY version DESC"
+            }
         };
         let mut stmt = conn.prepare(sql)?;
         let row: Option<String> = match &version {
@@ -491,7 +525,12 @@ impl Store {
         conn.execute(
             "INSERT INTO snapshots(id, sandbox_id, org_id, data) VALUES(?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET data = excluded.data",
-            params![snap.id, snap.sandbox_id, snap.org_id, serde_json::to_string(snap)?],
+            params![
+                snap.id,
+                snap.sandbox_id,
+                snap.org_id,
+                serde_json::to_string(snap)?
+            ],
         )?;
         Ok(())
     }
@@ -519,7 +558,11 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_secret(&self, org_id: &str, name: &str) -> Result<Option<crate::secrets::SecretRecord>> {
+    pub fn get_secret(
+        &self,
+        org_id: &str,
+        name: &str,
+    ) -> Result<Option<crate::secrets::SecretRecord>> {
         let conn = self.lock();
         let row: Option<String> = conn
             .query_row(
@@ -567,12 +610,18 @@ impl Store {
     pub fn get_volume(&self, id: &str) -> Result<Option<crate::model::Volume>> {
         let conn = self.lock();
         let row: Option<String> = conn
-            .query_row("SELECT data FROM volumes WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row("SELECT data FROM volumes WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
             .optional()?;
         Ok(row.map(|d| serde_json::from_str(&d)).transpose()?)
     }
 
-    pub fn get_volume_by_name(&self, org_id: &str, name: &str) -> Result<Option<crate::model::Volume>> {
+    pub fn get_volume_by_name(
+        &self,
+        org_id: &str,
+        name: &str,
+    ) -> Result<Option<crate::model::Volume>> {
         let conn = self.lock();
         let row: Option<String> = conn
             .query_row(
@@ -607,7 +656,12 @@ impl Store {
         let conn = self.lock();
         conn.execute(
             "INSERT INTO benchmarks(id, image, boot_path, data) VALUES(?1, ?2, ?3, ?4)",
-            params![s.id, s.image, s.boot_path.as_str(), serde_json::to_string(s)?],
+            params![
+                s.id,
+                s.image,
+                s.boot_path.as_str(),
+                serde_json::to_string(s)?
+            ],
         )?;
         Ok(())
     }
@@ -636,7 +690,11 @@ pub enum CasOutcome {
 }
 
 /// Close all open usage intervals for a sandbox, using an already-held lock.
-fn close_open_usage_locked(conn: &Connection, sandbox_id: &str, ended_at: DateTime<Utc>) -> Result<()> {
+fn close_open_usage_locked(
+    conn: &Connection,
+    sandbox_id: &str,
+    ended_at: DateTime<Utc>,
+) -> Result<()> {
     let mut stmt = conn.prepare("SELECT id, data FROM usage WHERE sandbox_id = ?1 AND open = 1")?;
     let rows: Vec<(String, String)> = stmt
         .query_map(params![sandbox_id], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -701,14 +759,24 @@ mod volume_tests {
         // org-scoped list + by-name lookup
         assert_eq!(s.list_volumes_for_org("org1").unwrap().len(), 2);
         assert_eq!(s.list_volumes_for_org("org2").unwrap().len(), 1);
-        assert_eq!(s.get_volume_by_name("org1", "cache").unwrap().unwrap().id, "vol_b");
+        assert_eq!(
+            s.get_volume_by_name("org1", "cache").unwrap().unwrap().id,
+            "vol_b"
+        );
         assert!(s.get_volume_by_name("org2", "cache").unwrap().is_none());
 
         // attach reservation round-trips through the JSON blob
         let mut v = s.get_volume("vol_a").unwrap().unwrap();
         v.attached_to = Some("sbx_1".into());
         s.put_volume(&v).unwrap();
-        assert_eq!(s.get_volume("vol_a").unwrap().unwrap().attached_to.as_deref(), Some("sbx_1"));
+        assert_eq!(
+            s.get_volume("vol_a")
+                .unwrap()
+                .unwrap()
+                .attached_to
+                .as_deref(),
+            Some("sbx_1")
+        );
 
         // delete frees the slot
         assert!(s.delete_volume("vol_a").unwrap());
@@ -720,6 +788,10 @@ mod volume_tests {
     fn volume_label_fits_ext4() {
         let l = crate::ids::volume_label("vol_a1b2c3d4e5f6");
         assert!(l.starts_with("wdv"));
-        assert!(l.len() <= 16, "ext4 labels are capped at 16 bytes, got {}", l.len());
+        assert!(
+            l.len() <= 16,
+            "ext4 labels are capped at 16 bytes, got {}",
+            l.len()
+        );
     }
 }

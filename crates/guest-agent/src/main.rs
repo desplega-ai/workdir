@@ -17,16 +17,35 @@ use std::process::Command;
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Request {
     Ping,
-    Exec { cmd: String, cwd: Option<String>, env: Option<Vec<(String, String)>>, background: Option<bool> },
-    WriteFile { path: String, content_b64: String },
-    ReadFile { path: String },
-    ListDir { path: String },
-    ReadyHttp { url: String, timeout_seconds: u64 },
+    Exec {
+        cmd: String,
+        cwd: Option<String>,
+        env: Option<Vec<(String, String)>>,
+        background: Option<bool>,
+    },
+    WriteFile {
+        path: String,
+        content_b64: String,
+    },
+    ReadFile {
+        path: String,
+    },
+    ListDir {
+        path: String,
+    },
+    ReadyHttp {
+        url: String,
+        timeout_seconds: u64,
+    },
     /// Streaming op: after a single Ok response line, this connection becomes
     /// the raw byte stream of a real TTY (openpty + shell on the slave side).
     /// One agent process serves one connection (socat fork), so the session
     /// ends — and the shell gets SIGHUP — when the host closes the stream.
-    Pty { cols: Option<u16>, rows: Option<u16>, cmd: Option<String> },
+    Pty {
+        cols: Option<u16>,
+        rows: Option<u16>,
+        cmd: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -39,17 +58,34 @@ enum Response {
 fn handle(req: Request) -> Response {
     match req {
         // Pty is handled in main() — it takes over the whole connection.
-        Request::Pty { .. } => Response::Error { message: "pty must be the first and only request on its connection".into() },
-        Request::Ping => Response::Ok { result: serde_json::json!({"agent": "ready"}) },
-        Request::Exec { cmd, cwd, env, background } => exec(cmd, cwd, env, background.unwrap_or(false)),
+        Request::Pty { .. } => Response::Error {
+            message: "pty must be the first and only request on its connection".into(),
+        },
+        Request::Ping => Response::Ok {
+            result: serde_json::json!({"agent": "ready"}),
+        },
+        Request::Exec {
+            cmd,
+            cwd,
+            env,
+            background,
+        } => exec(cmd, cwd, env, background.unwrap_or(false)),
         Request::WriteFile { path, content_b64 } => write_file(path, content_b64),
         Request::ReadFile { path } => read_file(path),
         Request::ListDir { path } => list_dir(path),
-        Request::ReadyHttp { url, timeout_seconds } => ready_http(url, timeout_seconds),
+        Request::ReadyHttp {
+            url,
+            timeout_seconds,
+        } => ready_http(url, timeout_seconds),
     }
 }
 
-fn exec(cmd: String, cwd: Option<String>, env: Option<Vec<(String, String)>>, background: bool) -> Response {
+fn exec(
+    cmd: String,
+    cwd: Option<String>,
+    env: Option<Vec<(String, String)>>,
+    background: bool,
+) -> Response {
     let mut c = Command::new("/bin/sh");
     c.arg("-lc").arg(&cmd);
     if let Some(dir) = cwd {
@@ -62,8 +98,12 @@ fn exec(cmd: String, cwd: Option<String>, env: Option<Vec<(String, String)>>, ba
     }
     if background {
         match c.spawn() {
-            Ok(child) => Response::Ok { result: serde_json::json!({"pid": child.id(), "background": true}) },
-            Err(e) => Response::Error { message: e.to_string() },
+            Ok(child) => Response::Ok {
+                result: serde_json::json!({"pid": child.id(), "background": true}),
+            },
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
         }
     } else {
         match c.output() {
@@ -74,7 +114,9 @@ fn exec(cmd: String, cwd: Option<String>, env: Option<Vec<(String, String)>>, ba
                     "stderr": String::from_utf8_lossy(&out.stderr),
                 }),
             },
-            Err(e) => Response::Error { message: e.to_string() },
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
         }
     }
 }
@@ -88,15 +130,23 @@ fn write_file(path: String, content_b64: String) -> Response {
         let _ = std::fs::create_dir_all(parent);
     }
     match std::fs::write(&path, bytes) {
-        Ok(()) => Response::Ok { result: serde_json::json!({"written": true, "path": path}) },
-        Err(e) => Response::Error { message: e.to_string() },
+        Ok(()) => Response::Ok {
+            result: serde_json::json!({"written": true, "path": path}),
+        },
+        Err(e) => Response::Error {
+            message: e.to_string(),
+        },
     }
 }
 
 fn read_file(path: String) -> Response {
     match std::fs::read(&path) {
-        Ok(bytes) => Response::Ok { result: serde_json::json!({"content_b64": b64_encode(&bytes)}) },
-        Err(e) => Response::Error { message: e.to_string() },
+        Ok(bytes) => Response::Ok {
+            result: serde_json::json!({"content_b64": b64_encode(&bytes)}),
+        },
+        Err(e) => Response::Error {
+            message: e.to_string(),
+        },
     }
 }
 
@@ -111,9 +161,13 @@ fn list_dir(path: String) -> Response {
                     "dir": is_dir,
                 }));
             }
-            Response::Ok { result: serde_json::json!({"entries": names}) }
+            Response::Ok {
+                result: serde_json::json!({"entries": names}),
+            }
         }
-        Err(e) => Response::Error { message: e.to_string() },
+        Err(e) => Response::Error {
+            message: e.to_string(),
+        },
     }
 }
 
@@ -128,10 +182,14 @@ fn ready_http(url: String, timeout_seconds: u64) -> Response {
             .map(|s| s.success())
             .unwrap_or(false);
         if ok {
-            return Response::Ok { result: serde_json::json!({"ready": true}) };
+            return Response::Ok {
+                result: serde_json::json!({"ready": true}),
+            };
         }
         if std::time::Instant::now() >= deadline {
-            return Response::Error { message: format!("ready check timed out after {timeout_seconds}s") };
+            return Response::Error {
+                message: format!("ready check timed out after {timeout_seconds}s"),
+            };
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
@@ -144,7 +202,11 @@ const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456
 fn b64_encode(input: &[u8]) -> String {
     let mut out = String::new();
     for chunk in input.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         out.push(B64[(b[0] >> 2) as usize] as char);
         out.push(B64[(((b[0] & 0x03) << 4) | (b[1] >> 4)) as usize] as char);
         if chunk.len() > 1 {
@@ -166,7 +228,10 @@ fn b64_decode(input: &str) -> Result<Vec<u8>, String> {
     for (i, &c) in B64.iter().enumerate() {
         table[c as usize] = i as u8;
     }
-    let clean: Vec<u8> = input.bytes().filter(|&b| b != b'=' && !b.is_ascii_whitespace()).collect();
+    let clean: Vec<u8> = input
+        .bytes()
+        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
+        .collect();
     let mut out = Vec::new();
     for chunk in clean.chunks(4) {
         let mut acc = 0u32;
@@ -221,17 +286,23 @@ fn main() {
                 // connection to the raw byte stream.
                 match pty::spawn(cols.unwrap_or(120), rows.unwrap_or(32), cmd) {
                     Ok(session) => {
-                        let ack = Response::Ok { result: serde_json::json!({"pty": true}) };
+                        let ack = Response::Ok {
+                            result: serde_json::json!({"pty": true}),
+                        };
                         let _ = writeln!(stdout, "{}", serde_json::to_string(&ack).unwrap());
                         let _ = stdout.flush();
                         let code = pty::bridge(session);
                         std::process::exit(code);
                     }
-                    Err(e) => Response::Error { message: format!("pty: {e}") },
+                    Err(e) => Response::Error {
+                        message: format!("pty: {e}"),
+                    },
                 }
             }
             Ok(req) => handle(req),
-            Err(e) => Response::Error { message: format!("bad request: {e}") },
+            Err(e) => Response::Error {
+                message: format!("bad request: {e}"),
+            },
         };
         let _ = writeln!(stdout, "{}", serde_json::to_string(&resp).unwrap());
         let _ = stdout.flush();
@@ -258,12 +329,26 @@ mod pty {
     pub fn spawn(cols: u16, rows: u16, cmd: Option<String>) -> Result<Session, String> {
         let mut master: libc::c_int = -1;
         let mut slave: libc::c_int = -1;
-        let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+        let mut ws = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
         let rc = unsafe {
-            libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws)
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut ws,
+            )
         };
         if rc != 0 {
-            return Err(format!("openpty failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "openpty failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         let mut c = match &cmd {
@@ -295,9 +380,16 @@ mod pty {
         let child = c.spawn().map_err(|e| format!("spawn shell: {e}"))?;
         unsafe { libc::close(slave) };
         let (master_read, master_write) = unsafe {
-            (std::fs::File::from_raw_fd(libc::dup(master)), std::fs::File::from_raw_fd(master))
+            (
+                std::fs::File::from_raw_fd(libc::dup(master)),
+                std::fs::File::from_raw_fd(master),
+            )
         };
-        Ok(Session { child, master_read, master_write })
+        Ok(Session {
+            child,
+            master_read,
+            master_write,
+        })
     }
 
     /// Pump stdio ↔ master until the shell exits or the host closes the
@@ -341,7 +433,12 @@ mod pty {
                 }
             }
         }
-        session.child.wait().ok().and_then(|st| st.code()).unwrap_or(0)
+        session
+            .child
+            .wait()
+            .ok()
+            .and_then(|st| st.code())
+            .unwrap_or(0)
     }
 }
 
@@ -379,10 +476,16 @@ mod vsock {
                 std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t,
             );
             if rc != 0 || libc::listen(fd, 16) != 0 {
-                eprintln!("vsock bind/listen failed: {}", std::io::Error::last_os_error());
+                eprintln!(
+                    "vsock bind/listen failed: {}",
+                    std::io::Error::last_os_error()
+                );
                 std::process::exit(1);
             }
-            eprintln!("{}", serde_json::json!({"event": "agent_vsock_listening", "port": port}));
+            eprintln!(
+                "{}",
+                serde_json::json!({"event": "agent_vsock_listening", "port": port})
+            );
             loop {
                 let conn = libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut());
                 if conn < 0 {

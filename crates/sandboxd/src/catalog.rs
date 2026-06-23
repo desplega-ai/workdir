@@ -66,12 +66,32 @@ impl ImageClass {
         match self {
             // Base can run as small as 512 MB for light, fast-standby workloads
             // (the default cheap path is still 2 GB / 1.0 unit).
-            ImageClass::Base => Resources { cpu: 0.5, memory_mb: 512, disk_gb: 8 },
-            ImageClass::NodePython => Resources { cpu: 1.0, memory_mb: 2048, disk_gb: 16 },
-            ImageClass::Browser => Resources { cpu: 2.0, memory_mb: 4096, disk_gb: 16 },
-            ImageClass::HeavyBuild => Resources { cpu: 2.0, memory_mb: 8192, disk_gb: 32 },
+            ImageClass::Base => Resources {
+                cpu: 0.5,
+                memory_mb: 512,
+                disk_gb: 8,
+            },
+            ImageClass::NodePython => Resources {
+                cpu: 1.0,
+                memory_mb: 2048,
+                disk_gb: 16,
+            },
+            ImageClass::Browser => Resources {
+                cpu: 2.0,
+                memory_mb: 4096,
+                disk_gb: 16,
+            },
+            ImageClass::HeavyBuild => Resources {
+                cpu: 2.0,
+                memory_mb: 8192,
+                disk_gb: 32,
+            },
             // Custom images carry a resources_hint; we apply base minimums.
-            ImageClass::Custom(_) => Resources { cpu: 1.0, memory_mb: 2048, disk_gb: 8 },
+            ImageClass::Custom(_) => Resources {
+                cpu: 1.0,
+                memory_mb: 2048,
+                disk_gb: 8,
+            },
         }
     }
 
@@ -85,7 +105,10 @@ impl ImageClass {
     /// the guest diverges). If node-python is ever rebuilt with its own
     /// non-overlay init, drop it from this set.
     pub fn supports_shared_rootfs(&self) -> bool {
-        matches!(self, ImageClass::Base | ImageClass::NodePython | ImageClass::Browser)
+        matches!(
+            self,
+            ImageClass::Base | ImageClass::NodePython | ImageClass::Browser
+        )
     }
 
     pub fn hot_pool_priority(&self) -> HotPoolPriority {
@@ -119,9 +142,33 @@ pub fn classify(image: &str) -> Result<ImageClass, String> {
 /// `(image_key, shape, target_count)`.
 pub fn default_hot_pools() -> Vec<(&'static str, Resources, u32)> {
     vec![
-        ("base", Resources { cpu: 1.0, memory_mb: 2048, disk_gb: 8 }, 2),
-        ("node-python", Resources { cpu: 1.0, memory_mb: 2048, disk_gb: 16 }, 1),
-        ("browser", Resources { cpu: 2.0, memory_mb: 4096, disk_gb: 16 }, 1),
+        (
+            "base",
+            Resources {
+                cpu: 1.0,
+                memory_mb: 2048,
+                disk_gb: 8,
+            },
+            2,
+        ),
+        (
+            "node-python",
+            Resources {
+                cpu: 1.0,
+                memory_mb: 2048,
+                disk_gb: 16,
+            },
+            1,
+        ),
+        (
+            "browser",
+            Resources {
+                cpu: 2.0,
+                memory_mb: 4096,
+                disk_gb: 16,
+            },
+            1,
+        ),
     ]
 }
 
@@ -182,7 +229,10 @@ mod tests {
     fn classify_curated_and_custom() {
         assert_eq!(classify("base").unwrap(), ImageClass::Base);
         assert_eq!(classify("browser").unwrap(), ImageClass::Browser);
-        assert!(matches!(classify("custom/acme/app:2026-06-10").unwrap(), ImageClass::Custom(_)));
+        assert!(matches!(
+            classify("custom/acme/app:2026-06-10").unwrap(),
+            ImageClass::Custom(_)
+        ));
         assert!(classify("ubuntu").is_err());
     }
 

@@ -30,15 +30,22 @@ fn view(v: &Volume) -> Value {
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 pub async fn list(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> ApiResult<Json<Value>> {
-    let vols = state.store.list_volumes_for_org(&ctx.org_id).map_err(ApiError::Internal)?;
-    Ok(Json(json!({ "volumes": vols.iter().map(view).collect::<Vec<_>>() })))
+    let vols = state
+        .store
+        .list_volumes_for_org(&ctx.org_id)
+        .map_err(ApiError::Internal)?;
+    Ok(Json(
+        json!({ "volumes": vols.iter().map(view).collect::<Vec<_>>() }),
+    ))
 }
 
 pub async fn get(
@@ -72,7 +79,10 @@ pub async fn create(
         .map_err(ApiError::Internal)?
         .is_some()
     {
-        return Err(ApiError::Conflict(format!("a volume named '{}' already exists", req.name)));
+        return Err(ApiError::Conflict(format!(
+            "a volume named '{}' already exists",
+            req.name
+        )));
     }
 
     let id = ids::volume_id();

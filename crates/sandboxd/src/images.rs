@@ -32,7 +32,11 @@ impl ImageStatus {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ImageSource {
     /// Build from a Dockerfile + build context tarball URL.
-    Dockerfile { context_url: String, #[serde(default = "default_dockerfile")] dockerfile: String },
+    Dockerfile {
+        context_url: String,
+        #[serde(default = "default_dockerfile")]
+        dockerfile: String,
+    },
     /// Import a pre-built OCI image reference.
     Oci { image_ref: String },
 }

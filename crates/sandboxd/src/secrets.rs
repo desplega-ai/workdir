@@ -35,7 +35,10 @@ pub fn load_or_create_key(data_dir: &Path) -> Result<[u8; 32]> {
     if let Ok(b64) = std::env::var("WORKDIR_SECRET_KEY") {
         let bytes = b64_decode(&b64).map_err(|e| anyhow!("bad WORKDIR_SECRET_KEY: {e}"))?;
         if bytes.len() != 32 {
-            bail!("WORKDIR_SECRET_KEY must decode to 32 bytes, got {}", bytes.len());
+            bail!(
+                "WORKDIR_SECRET_KEY must decode to 32 bytes, got {}",
+                bytes.len()
+            );
         }
         let mut key = [0u8; 32];
         key.copy_from_slice(&bytes);
@@ -88,7 +91,9 @@ pub fn decrypt(key: &[u8; 32], rec: &SecretRecord) -> Result<String> {
     let nonce_bytes = b64_decode(&rec.nonce_b64).map_err(|e| anyhow!("{e}"))?;
     let ct = b64_decode(&rec.ciphertext_b64).map_err(|e| anyhow!("{e}"))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let pt = cipher.decrypt(nonce, ct.as_slice()).map_err(|_| anyhow!("decryption failed"))?;
+    let pt = cipher
+        .decrypt(nonce, ct.as_slice())
+        .map_err(|_| anyhow!("decryption failed"))?;
     String::from_utf8(pt).context("secret is not valid UTF-8")
 }
 
@@ -96,7 +101,11 @@ pub fn decrypt(key: &[u8; 32], rec: &SecretRecord) -> Result<String> {
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
-        && name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false)
+        && name
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_alphabetic() || c == '_')
+            .unwrap_or(false)
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -107,11 +116,23 @@ const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456
 fn b64_encode(input: &[u8]) -> String {
     let mut out = String::new();
     for chunk in input.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         out.push(B64[(b[0] >> 2) as usize] as char);
         out.push(B64[(((b[0] & 0x03) << 4) | (b[1] >> 4)) as usize] as char);
-        out.push(if chunk.len() > 1 { B64[(((b[1] & 0x0f) << 2) | (b[2] >> 6)) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[(b[2] & 0x3f) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64[(((b[1] & 0x0f) << 2) | (b[2] >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(b[2] & 0x3f) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -121,7 +142,10 @@ fn b64_decode(input: &str) -> std::result::Result<Vec<u8>, String> {
     for (i, &c) in B64.iter().enumerate() {
         table[c as usize] = i as u8;
     }
-    let clean: Vec<u8> = input.bytes().filter(|&b| b != b'=' && !b.is_ascii_whitespace()).collect();
+    let clean: Vec<u8> = input
+        .bytes()
+        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
+        .collect();
     let mut out = Vec::new();
     for chunk in clean.chunks(4) {
         let mut acc = 0u32;

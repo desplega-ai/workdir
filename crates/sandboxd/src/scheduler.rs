@@ -107,7 +107,11 @@ pub fn score_node(req: &PlacementRequest, snap: &NodeSnapshot) -> Option<f64> {
         return None;
     }
 
-    let matching_hot_pool_available = if snap.hot_pool_available > 0 { 1.0 } else { 0.0 };
+    let matching_hot_pool_available = if snap.hot_pool_available > 0 {
+        1.0
+    } else {
+        0.0
+    };
     let image_cached = if snap.image_cached { 1.0 } else { 0.0 };
     let memory_fit_score = snap.free_ratio_after(&req.resources);
     let low_cpu_pressure = (1.0 - snap.cpu_pressure).clamp(0.0, 1.0);
@@ -140,7 +144,8 @@ pub fn select(req: &PlacementRequest, snapshots: &[NodeSnapshot]) -> Result<Plac
             detail: "no nodes are registered".to_string(),
         });
     }
-    let schedulable: Vec<&NodeSnapshot> = snapshots.iter().filter(|s| s.node.is_available()).collect();
+    let schedulable: Vec<&NodeSnapshot> =
+        snapshots.iter().filter(|s| s.node.is_available()).collect();
     if schedulable.is_empty() {
         return Err(Rejection {
             reason: "no_schedulable_nodes".to_string(),
@@ -186,7 +191,11 @@ pub fn select(req: &PlacementRequest, snapshots: &[NodeSnapshot]) -> Result<Plac
         BootPath::ColdBoot
     };
 
-    Ok(Placement { node_id: snap.node.id.clone(), score, boot_path_hint })
+    Ok(Placement {
+        node_id: snap.node.id.clone(),
+        score,
+        boot_path_hint,
+    })
 }
 
 #[cfg(test)]

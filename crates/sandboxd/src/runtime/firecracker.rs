@@ -32,9 +32,9 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::time::SystemTime;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -156,7 +156,10 @@ fn guest_mac(index: u32) -> String {
 
 /// Run an `ip` command (needs CAP_NET_ADMIN on the daemon).
 async fn run_ip(args: &[&str]) -> Result<()> {
-    let status = tokio::process::Command::new("ip").args(args).status().await?;
+    let status = tokio::process::Command::new("ip")
+        .args(args)
+        .status()
+        .await?;
     if !status.success() {
         bail!("ip {} failed", args.join(" "));
     }
@@ -169,10 +172,18 @@ async fn run_ip(args: &[&str]) -> Result<()> {
 /// would otherwise have no network (roadmap Phase 1).
 async fn setup_tap(tap: &str) -> Result<()> {
     let _ = run_ip(&["link", "del", tap]).await; // clear any stale device
-    run_ip(&["tuntap", "add", tap, "mode", "tap"]).await.context("create tap")?;
-    run_ip(&["link", "set", tap, "master", NET_BRIDGE]).await.context("attach tap to bridge")?;
-    run_ip(&["link", "set", tap, "type", "bridge_slave", "isolated", "on"]).await.context("isolate tap")?;
-    run_ip(&["link", "set", tap, "up"]).await.context("bring tap up")?;
+    run_ip(&["tuntap", "add", tap, "mode", "tap"])
+        .await
+        .context("create tap")?;
+    run_ip(&["link", "set", tap, "master", NET_BRIDGE])
+        .await
+        .context("attach tap to bridge")?;
+    run_ip(&["link", "set", tap, "type", "bridge_slave", "isolated", "on"])
+        .await
+        .context("isolate tap")?;
+    run_ip(&["link", "set", tap, "up"])
+        .await
+        .context("bring tap up")?;
     Ok(())
 }
 
@@ -345,8 +356,12 @@ impl FirecrackerRuntime {
                     continue;
                 }
                 let record_path = e.path().join("record.json");
-                let Ok(data) = std::fs::read_to_string(&record_path) else { continue };
-                let Ok(mut rec) = serde_json::from_str::<VmRecord>(&data) else { continue };
+                let Ok(data) = std::fs::read_to_string(&record_path) else {
+                    continue;
+                };
+                let Ok(mut rec) = serde_json::from_str::<VmRecord>(&data) else {
+                    continue;
+                };
                 // A pid from a previous daemon run is only trustworthy while it
                 // still names a live firecracker/jailer process; a recycled pid
                 // must never be killed on the record's behalf.
@@ -390,7 +405,11 @@ impl FirecrackerRuntime {
             }
         }
         if !vms.is_empty() {
-            tracing::info!(count = vms.len(), next_tap, "rehydrated persisted VM records");
+            tracing::info!(
+                count = vms.len(),
+                next_tap,
+                "rehydrated persisted VM records"
+            );
         }
         (vms, next_tap, next_cid, next_restore)
     }
@@ -446,7 +465,13 @@ impl FirecrackerRuntime {
 
     /// HTTP PUT/PATCH against the Firecracker API socket with the default read
     /// timeout. Firecracker answers most calls in well under a second.
-    async fn fc_api(&self, sock: &PathBuf, method: &str, path: &str, body: &serde_json::Value) -> Result<()> {
+    async fn fc_api(
+        &self,
+        sock: &PathBuf,
+        method: &str,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<()> {
         self.fc_api_to(sock, method, path, body, 10).await
     }
 
@@ -455,7 +480,14 @@ impl FirecrackerRuntime {
     /// whole guest RAM (multiple GB), so they need a generous timeout — the
     /// previous fixed 5 s fired mid-snapshot, returning a false failure that then
     /// tore the VM down (the real cause of "snapshot under jailer fails").
-    async fn fc_api_to(&self, sock: &PathBuf, method: &str, path: &str, body: &serde_json::Value, read_secs: u64) -> Result<()> {
+    async fn fc_api_to(
+        &self,
+        sock: &PathBuf,
+        method: &str,
+        path: &str,
+        body: &serde_json::Value,
+        read_secs: u64,
+    ) -> Result<()> {
         let mut stream = Self::fc_connect(sock).await?;
         let body_str = serde_json::to_string(body)?;
         let req = format!(
@@ -469,7 +501,8 @@ impl FirecrackerRuntime {
         let mut resp = Vec::new();
         let mut buf = [0u8; 2048];
         loop {
-            match tokio::time::timeout(Duration::from_secs(read_secs), stream.read(&mut buf)).await {
+            match tokio::time::timeout(Duration::from_secs(read_secs), stream.read(&mut buf)).await
+            {
                 Ok(Ok(0)) => break, // EOF
                 Ok(Ok(n)) => {
                     resp.extend_from_slice(&buf[..n]);
@@ -490,7 +523,9 @@ impl FirecrackerRuntime {
                         // non-2xx: fall through and keep reading the (small) body
                     }
                 }
-                Ok(Err(e)) => return Err(anyhow::Error::from(e).context("read firecracker api response")),
+                Ok(Err(e)) => {
+                    return Err(anyhow::Error::from(e).context("read firecracker api response"))
+                }
                 Err(_) => break, // read timeout — proceed with what we have
             }
         }
@@ -499,7 +534,11 @@ impl FirecrackerRuntime {
         // Include the response body (Firecracker's fault_message) after the
         // headers, so the error is actionable.
         let body = text.split("\r\n\r\n").nth(1).unwrap_or("").trim();
-        bail!("firecracker api {method} {path} failed: {} {}", status.trim(), body);
+        bail!(
+            "firecracker api {method} {path} failed: {} {}",
+            status.trim(),
+            body
+        );
     }
 
     /// GET against the Firecracker API socket, returning the parsed JSON body.
@@ -521,7 +560,11 @@ impl FirecrackerRuntime {
                 let head = String::from_utf8_lossy(&resp[..pos]);
                 let clen: usize = head
                     .lines()
-                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse().unwrap_or(0))
+                    })
                     .unwrap_or(0);
                 let body_start = pos + 4;
                 if resp.len() >= body_start + clen {
@@ -529,7 +572,9 @@ impl FirecrackerRuntime {
                     if !status.contains(" 200") {
                         bail!("firecracker api GET {path} failed: {status}");
                     }
-                    return Ok(serde_json::from_slice(&resp[body_start..body_start + clen])?);
+                    return Ok(serde_json::from_slice(
+                        &resp[body_start..body_start + clen],
+                    )?);
                 }
             }
             if Instant::now() >= deadline {
@@ -538,7 +583,9 @@ impl FirecrackerRuntime {
             match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await {
                 Ok(Ok(0)) => bail!("firecracker api GET {path}: connection closed early"),
                 Ok(Ok(n)) => resp.extend_from_slice(&buf[..n]),
-                Ok(Err(e)) => return Err(anyhow::Error::from(e).context("read firecracker api response")),
+                Ok(Err(e)) => {
+                    return Err(anyhow::Error::from(e).context("read firecracker api response"))
+                }
                 Err(_) => bail!("firecracker api GET {path} read timed out"),
             }
         }
@@ -546,16 +593,24 @@ impl FirecrackerRuntime {
 
     /// One request/response with the guest agent over the vsock-backed UDS,
     /// performing Firecracker's `CONNECT <port>` handshake first.
-    async fn agent_call(&self, handle: &str, request: &serde_json::Value) -> Result<serde_json::Value> {
+    async fn agent_call(
+        &self,
+        handle: &str,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let uds = {
             let vms = self.vms.lock().unwrap();
-            vms.get(handle).map(|v| v.vsock_uds.clone()).ok_or_else(|| anyhow!("unknown vm {handle}"))?
+            vms.get(handle)
+                .map(|v| v.vsock_uds.clone())
+                .ok_or_else(|| anyhow!("unknown vm {handle}"))?
         };
         let mut stream = UnixStream::connect(&uds)
             .await
             .with_context(|| format!("connect guest vsock uds {uds:?}"))?;
         // Firecracker host-initiated connection handshake.
-        stream.write_all(format!("CONNECT {GUEST_AGENT_VSOCK_PORT}\n").as_bytes()).await?;
+        stream
+            .write_all(format!("CONNECT {GUEST_AGENT_VSOCK_PORT}\n").as_bytes())
+            .await?;
         let mut ack = [0u8; 64];
         let n = stream.read(&mut ack).await?;
         let ack_str = String::from_utf8_lossy(&ack[..n]);
@@ -574,11 +629,18 @@ impl FirecrackerRuntime {
             }
             buf.push(byte[0]);
         }
-        let resp: serde_json::Value = serde_json::from_slice(&buf).context("parse agent response")?;
+        let resp: serde_json::Value =
+            serde_json::from_slice(&buf).context("parse agent response")?;
         if resp.get("status").and_then(|s| s.as_str()) == Some("error") {
-            bail!("guest agent error: {}", resp.get("message").and_then(|m| m.as_str()).unwrap_or("?"));
+            bail!(
+                "guest agent error: {}",
+                resp.get("message").and_then(|m| m.as_str()).unwrap_or("?")
+            );
         }
-        Ok(resp.get("result").cloned().unwrap_or(serde_json::Value::Null))
+        Ok(resp
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
     }
 
     /// Wait until the guest agent answers a ping or we time out.
@@ -586,7 +648,11 @@ impl FirecrackerRuntime {
         let start = Instant::now();
         let mut delay = Duration::from_millis(2);
         loop {
-            if self.agent_call(handle, &json!({"op": "ping"})).await.is_ok() {
+            if self
+                .agent_call(handle, &json!({"op": "ping"}))
+                .await
+                .is_ok()
+            {
                 return Ok(start.elapsed().as_millis() as u64);
             }
             if start.elapsed() >= timeout {
@@ -622,7 +688,10 @@ impl FirecrackerRuntime {
                 let file = format!("{}.ext4", v.volume_id);
                 let host_path = self.volumes_dir.join(&file);
                 if !host_path.exists() {
-                    bail!("volume {} has no backing image at {host_path:?}", v.volume_id);
+                    bail!(
+                        "volume {} has no backing image at {host_path:?}",
+                        v.volume_id
+                    );
                 }
                 Ok(VolumeStage {
                     file,
@@ -653,7 +722,11 @@ impl FirecrackerRuntime {
             // exists, then reference them by chroot-relative path.
             let jail_id = handle.replace('_', "-");
             let uid = self.jailer_uid_base + tap_idx;
-            let chroot_root = self.chroot_base.join("firecracker").join(&jail_id).join("root");
+            let chroot_root = self
+                .chroot_base
+                .join("firecracker")
+                .join(&jail_id)
+                .join("root");
             let log = std::fs::File::create(jail.join("firecracker.log")).context("fc log")?;
             let log2 = log.try_clone().context("fc log clone")?;
             let child = tokio::process::Command::new(&self.jailer_bin)
@@ -671,10 +744,18 @@ impl FirecrackerRuntime {
             poll_until(Duration::from_secs(4), || chroot_root.exists()).await;
             let kdst = chroot_root.join("vmlinux");
             let rdst = chroot_root.join("rootfs.ext4");
-            tokio::process::Command::new("cp").arg(&self.kernel_image).arg(&kdst).status().await
+            tokio::process::Command::new("cp")
+                .arg(&self.kernel_image)
+                .arg(&kdst)
+                .status()
+                .await
                 .context("stage kernel into chroot")?;
             let owner = format!("{uid}:{uid}");
-            let _ = tokio::process::Command::new("chown").arg(&owner).arg(&kdst).status().await;
+            let _ = tokio::process::Command::new("chown")
+                .arg(&owner)
+                .arg(&kdst)
+                .status()
+                .await;
             // Phase 3 density: with `shared_rootfs`, HARDLINK the read-only base
             // into the chroot — same inode → one copy in the host page cache
             // shared by every VM, instant, zero extra disk. No chown: that would
@@ -685,9 +766,18 @@ impl FirecrackerRuntime {
             if self.shared_for(spec) && std::fs::hard_link(&rootfs, &rdst).is_ok() {
                 // shared inode staged (read-only, world-readable)
             } else {
-                tokio::process::Command::new("cp").args(["--reflink=auto"]).arg(&rootfs).arg(&rdst).status().await
+                tokio::process::Command::new("cp")
+                    .args(["--reflink=auto"])
+                    .arg(&rootfs)
+                    .arg(&rdst)
+                    .status()
+                    .await
                     .context("stage rootfs into chroot")?;
-                let _ = tokio::process::Command::new("chown").arg(&owner).arg(&rdst).status().await;
+                let _ = tokio::process::Command::new("chown")
+                    .arg(&owner)
+                    .arg(&rdst)
+                    .status()
+                    .await;
             }
             // Persistent volumes: HARDLINK the backing image into the chroot —
             // same inode, so guest writes persist under volumes_dir after this VM
@@ -704,7 +794,11 @@ impl FirecrackerRuntime {
                         v.file
                     )
                 })?;
-                let _ = tokio::process::Command::new("chown").arg(&owner).arg(&dst).status().await;
+                let _ = tokio::process::Command::new("chown")
+                    .arg(&owner)
+                    .arg(&dst)
+                    .status()
+                    .await;
             }
             (
                 chroot_root.join("api.sock"),
@@ -727,7 +821,12 @@ impl FirecrackerRuntime {
                 rootfs.to_string_lossy().into_owned()
             } else {
                 let overlay = jail.join("overlay.ext4");
-                tokio::process::Command::new("cp").args(["--reflink=auto"]).arg(&rootfs).arg(&overlay).status().await
+                tokio::process::Command::new("cp")
+                    .args(["--reflink=auto"])
+                    .arg(&rootfs)
+                    .arg(&overlay)
+                    .status()
+                    .await
                     .context("create COW overlay (is the rootfs present?)")?;
                 overlay.to_string_lossy().into_owned()
             };
@@ -892,7 +991,8 @@ impl FirecrackerRuntime {
             Ok((boot_ms, agent_ms)) => Ok((handle, boot_ms, agent_ms)),
             Err(e) => {
                 // Surface Firecracker's own log so boot failures are diagnosable.
-                let fc_log = std::fs::read_to_string(jail.join("firecracker.log")).unwrap_or_default();
+                let fc_log =
+                    std::fs::read_to_string(jail.join("firecracker.log")).unwrap_or_default();
                 tracing::error!(
                     handle = %handle,
                     error = %e,
@@ -933,7 +1033,10 @@ impl FirecrackerRuntime {
                 mp = shell_quote(&v.mount_path),
             );
             let res = self
-                .agent_call(handle, &json!({"op": "exec", "cmd": cmd, "background": false}))
+                .agent_call(
+                    handle,
+                    &json!({"op": "exec", "cmd": cmd, "background": false}),
+                )
                 .await?;
             let exit = res.get("exit_code").and_then(|c| c.as_i64()).unwrap_or(-1);
             if exit != 0 {
@@ -951,7 +1054,10 @@ impl FirecrackerRuntime {
             let jailed = jail_guest_path(path)?;
             let b64 = base64_encode(bytes);
             let _ = self
-                .agent_call(handle, &json!({"op": "write_file", "path": jailed, "content_b64": b64}))
+                .agent_call(
+                    handle,
+                    &json!({"op": "write_file", "path": jailed, "content_b64": b64}),
+                )
                 .await;
         }
 
@@ -966,7 +1072,10 @@ impl FirecrackerRuntime {
                 let t = Instant::now();
                 let cmd = coding_agent_install_cmd(agent);
                 let _ = self
-                    .agent_call(handle, &json!({"op": "exec", "cmd": cmd, "background": false}))
+                    .agent_call(
+                        handle,
+                        &json!({"op": "exec", "cmd": cmd, "background": false}),
+                    )
                     .await;
                 agent_ms = t.elapsed().as_millis() as u64;
             }
@@ -1012,7 +1121,11 @@ impl FirecrackerRuntime {
             if m.kind != "s3" {
                 continue;
             }
-            let mut args = format!("mount-s3 {} {}", shell_quote(&m.bucket), shell_quote(&m.mount_path));
+            let mut args = format!(
+                "mount-s3 {} {}",
+                shell_quote(&m.bucket),
+                shell_quote(&m.mount_path)
+            );
             if let Some(prefix) = &m.prefix {
                 args.push_str(&format!(" --prefix {}", shell_quote(prefix)));
             }
@@ -1044,7 +1157,10 @@ impl FirecrackerRuntime {
     /// Kill a VM's jailer process and reclaim its jail dir + workspace + record.
     async fn kill_and_reclaim(&self, handle: &str, pid: Option<u32>, jail: &std::path::Path) {
         if let Some(pid) = pid {
-            let _ = tokio::process::Command::new("kill").arg(pid.to_string()).status().await;
+            let _ = tokio::process::Command::new("kill")
+                .arg(pid.to_string())
+                .status()
+                .await;
         }
         let tap = self.vms.lock().unwrap().remove(handle).and_then(|r| r.tap);
         if let Some(tap) = tap {
@@ -1059,7 +1175,9 @@ impl FirecrackerRuntime {
 
     /// The jailer's chroot directory for a VM handle.
     fn jailer_chroot(&self, handle: &str) -> PathBuf {
-        self.chroot_base.join("firecracker").join(handle.replace('_', "-"))
+        self.chroot_base
+            .join("firecracker")
+            .join(handle.replace('_', "-"))
     }
 
     /// Per-VM jail directory (holds api.sock, the snapshot artifacts, and the
@@ -1114,8 +1232,14 @@ impl FirecrackerRuntime {
     /// snapshots in ~1-2s instead of writing the full multi-GB image. The caller
     /// must guarantee a base mem.file already exists (a prior Full snapshot of
     /// the same VM, persisted across the restore via hardlinks).
-    async fn write_snapshot(&self, sock: &PathBuf, jail: &std::path::Path, diff: bool) -> Result<(PathBuf, PathBuf)> {
-        self.fc_api(sock, "PATCH", "/vm", &json!({"state": "Paused"})).await?;
+    async fn write_snapshot(
+        &self,
+        sock: &PathBuf,
+        jail: &std::path::Path,
+        diff: bool,
+    ) -> Result<(PathBuf, PathBuf)> {
+        self.fc_api(sock, "PATCH", "/vm", &json!({"state": "Paused"}))
+            .await?;
         let snap_file = jail.join("snapshot.file");
         let mem_file = jail.join("mem.file");
         // Under the jailer, Firecracker is chrooted to `jail`, so it must be given
@@ -1127,13 +1251,23 @@ impl FirecrackerRuntime {
         let (snap_api, mem_api) = if self.use_jailer {
             ("snapshot.file".to_string(), "mem.file".to_string())
         } else {
-            (snap_file.to_string_lossy().into_owned(), mem_file.to_string_lossy().into_owned())
+            (
+                snap_file.to_string_lossy().into_owned(),
+                mem_file.to_string_lossy().into_owned(),
+            )
         };
-        self.fc_api_to(sock, "PUT", "/snapshot/create", &json!({
-            "snapshot_type": if diff { "Diff" } else { "Full" },
-            "snapshot_path": snap_api,
-            "mem_file_path": mem_api,
-        }), 300).await?;
+        self.fc_api_to(
+            sock,
+            "PUT",
+            "/snapshot/create",
+            &json!({
+                "snapshot_type": if diff { "Diff" } else { "Full" },
+                "snapshot_path": snap_api,
+                "mem_file_path": mem_api,
+            }),
+            300,
+        )
+        .await?;
         Ok((snap_file, mem_file))
     }
 
@@ -1144,10 +1278,15 @@ impl FirecrackerRuntime {
         let n = self.next_pool.fetch_add(1, Ordering::SeqCst);
         let jail_id = format!("pool-{n}");
         let uid = self.jailer_uid_base + 90_000 + (n % 9_000);
-        let chroot_root = self.chroot_base.join("firecracker").join(&jail_id).join("root");
+        let chroot_root = self
+            .chroot_base
+            .join("firecracker")
+            .join(&jail_id)
+            .join("root");
         let pool_dir = self.chroot_base.join("jailer-pool");
         std::fs::create_dir_all(&pool_dir).ok();
-        let log = std::fs::File::create(pool_dir.join(format!("{jail_id}.log"))).context("pool log")?;
+        let log =
+            std::fs::File::create(pool_dir.join(format!("{jail_id}.log"))).context("pool log")?;
         let log2 = log.try_clone()?;
         let pid = tokio::process::Command::new(&self.jailer_bin)
             .args(["--id", &jail_id])
@@ -1167,12 +1306,21 @@ impl FirecrackerRuntime {
         // passes that check; the pool must only hold processes that ACCEPT.
         if let Err(e) = Self::fc_connect(&api).await {
             if let Some(pid) = pid {
-                let _ = tokio::process::Command::new("kill").arg("-9").arg(pid.to_string()).status().await;
+                let _ = tokio::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .status()
+                    .await;
             }
             let _ = std::fs::remove_dir_all(self.chroot_base.join("firecracker").join(&jail_id));
             return Err(e.context("pooled firecracker never accepted a connection"));
         }
-        Ok(PooledJail { jail_id, chroot_root, uid, pid })
+        Ok(PooledJail {
+            jail_id,
+            chroot_root,
+            uid,
+            pid,
+        })
     }
 
     /// Claim a pre-spawned jailer, if any. The warmer's `maintain` refills.
@@ -1190,9 +1338,10 @@ impl FirecrackerRuntime {
     fn golden_fresh(&self, image_key: &str, resources: &crate::knobs::Resources) -> bool {
         let golden = self.golden_dir(image_key, resources).join("snapshot.file");
         let rootfs = self.images_dir.join(image_key).join("rootfs.ext4");
-        match (std::fs::metadata(&golden).and_then(|m| m.modified()),
-               std::fs::metadata(&rootfs).and_then(|m| m.modified()))
-        {
+        match (
+            std::fs::metadata(&golden).and_then(|m| m.modified()),
+            std::fs::metadata(&rootfs).and_then(|m| m.modified()),
+        ) {
             (Ok(g), Ok(r)) => g >= r,
             // No rootfs to compare against (custom layouts): existence rules.
             (Ok(_), Err(_)) => true,
@@ -1230,8 +1379,13 @@ impl FirecrackerRuntime {
         let publish: Result<()> = async {
             let (sock, jail) = {
                 let vms = self.vms.lock().unwrap();
-                let v = vms.get(&handle).ok_or_else(|| anyhow!("golden vm record missing"))?;
-                (v.api_sock.clone(), v.api_sock.parent().unwrap().to_path_buf())
+                let v = vms
+                    .get(&handle)
+                    .ok_or_else(|| anyhow!("golden vm record missing"))?;
+                (
+                    v.api_sock.clone(),
+                    v.api_sock.parent().unwrap().to_path_buf(),
+                )
             };
             let (snap, mem) = self.write_snapshot(&sock, &jail, false).await?;
             std::fs::create_dir_all(&dir).context("create golden dir")?;
@@ -1277,7 +1431,11 @@ impl FirecrackerRuntime {
             None => {
                 let jail_id = handle.replace('_', "-");
                 let uid = self.jailer_uid_base + tap_idx;
-                let chroot_root = self.chroot_base.join("firecracker").join(&jail_id).join("root");
+                let chroot_root = self
+                    .chroot_base
+                    .join("firecracker")
+                    .join(&jail_id)
+                    .join("root");
                 let log = std::fs::File::create(jail.join("firecracker.log")).context("fc log")?;
                 let log2 = log.try_clone()?;
                 let pid = tokio::process::Command::new(&self.jailer_bin)
@@ -1324,69 +1482,70 @@ impl FirecrackerRuntime {
         );
         self.persist_record(&handle);
 
-        let booted: Result<u64> = async {
-            poll_until(Duration::from_secs(4), || chroot_root.exists()).await;
-            // Stage the golden artifacts under names the VM's own snapshots will
-            // never write to ("golden-*"): hardlinks share the host page cache
-            // across every sibling restored from this artifact, and must never
-            // be truncated by a later standby.
-            let stage = |name: &str, as_name: &str| -> Result<()> {
-                let dst = chroot_root.join(as_name);
-                let _ = std::fs::remove_file(&dst);
-                std::fs::hard_link(dir.join(name), &dst)
-                    .or_else(|_| std::fs::copy(dir.join(name), &dst).map(|_| ()))
-                    .with_context(|| format!("stage golden {name}"))
-            };
-            stage("snapshot.file", "golden-snapshot.file")?;
-            stage("mem.file", "golden-mem.file")?;
-            // The snapshot's root drive reopens "rootfs.ext4" inside this chroot.
-            if self.shared_for(spec) {
-                // Shared images: hardlink the one read-only base (page cache is
-                // shared; guest writes live in its tmpfs overlay).
-                let dst = chroot_root.join("rootfs.ext4");
-                let _ = std::fs::remove_file(&dst);
-                std::fs::hard_link(self.rootfs_path(spec), &dst)
-                    .context("hardlink shared base for golden restore")?;
-            } else {
-                // Private-disk images: an own (reflink) copy of the golden's
-                // snapshot-time disk, so this VM diverges independently.
-                let st = tokio::process::Command::new("cp")
-                    .args(["--reflink=auto"])
-                    .arg(dir.join("rootfs.ext4"))
-                    .arg(chroot_root.join("rootfs.ext4"))
-                    .status()
-                    .await
-                    .context("copy golden rootfs")?;
-                if !st.success() {
-                    bail!("copy golden rootfs failed");
+        let booted: Result<u64> =
+            async {
+                poll_until(Duration::from_secs(4), || chroot_root.exists()).await;
+                // Stage the golden artifacts under names the VM's own snapshots will
+                // never write to ("golden-*"): hardlinks share the host page cache
+                // across every sibling restored from this artifact, and must never
+                // be truncated by a later standby.
+                let stage = |name: &str, as_name: &str| -> Result<()> {
+                    let dst = chroot_root.join(as_name);
+                    let _ = std::fs::remove_file(&dst);
+                    std::fs::hard_link(dir.join(name), &dst)
+                        .or_else(|_| std::fs::copy(dir.join(name), &dst).map(|_| ()))
+                        .with_context(|| format!("stage golden {name}"))
+                };
+                stage("snapshot.file", "golden-snapshot.file")?;
+                stage("mem.file", "golden-mem.file")?;
+                // The snapshot's root drive reopens "rootfs.ext4" inside this chroot.
+                if self.shared_for(spec) {
+                    // Shared images: hardlink the one read-only base (page cache is
+                    // shared; guest writes live in its tmpfs overlay).
+                    let dst = chroot_root.join("rootfs.ext4");
+                    let _ = std::fs::remove_file(&dst);
+                    std::fs::hard_link(self.rootfs_path(spec), &dst)
+                        .context("hardlink shared base for golden restore")?;
+                } else {
+                    // Private-disk images: an own (reflink) copy of the golden's
+                    // snapshot-time disk, so this VM diverges independently.
+                    let st = tokio::process::Command::new("cp")
+                        .args(["--reflink=auto"])
+                        .arg(dir.join("rootfs.ext4"))
+                        .arg(chroot_root.join("rootfs.ext4"))
+                        .status()
+                        .await
+                        .context("copy golden rootfs")?;
+                    if !st.success() {
+                        bail!("copy golden rootfs failed");
+                    }
+                    let _ = tokio::process::Command::new("chown")
+                        .arg(format!("{uid}:{uid}"))
+                        .arg(chroot_root.join("rootfs.ext4"))
+                        .status()
+                        .await;
                 }
-                let _ = tokio::process::Command::new("chown")
-                    .arg(format!("{uid}:{uid}"))
-                    .arg(chroot_root.join("rootfs.ext4"))
-                    .status()
-                    .await;
-            }
 
-            let api_sock = chroot_root.join("api.sock");
-            poll_until(Duration::from_secs(4), || api_sock.exists()).await;
-            if self.prewarm_mem_cache {
-                let m = chroot_root.join("golden-mem.file");
-                tokio::spawn(async move { prewarm_page_cache(&m).await });
-            }
-            // Load FIRST (the snapshot restores its own vsock at "vsock.sock");
-            // network_overrides points eth0 at THIS VM's tap — the golden VM's
-            // tap is long gone, and siblings each need their own device.
-            self.fc_api_to(&api_sock, "PUT", "/snapshot/load", &json!({
+                let api_sock = chroot_root.join("api.sock");
+                poll_until(Duration::from_secs(4), || api_sock.exists()).await;
+                if self.prewarm_mem_cache {
+                    let m = chroot_root.join("golden-mem.file");
+                    tokio::spawn(async move { prewarm_page_cache(&m).await });
+                }
+                // Load FIRST (the snapshot restores its own vsock at "vsock.sock");
+                // network_overrides points eth0 at THIS VM's tap — the golden VM's
+                // tap is long gone, and siblings each need their own device.
+                self.fc_api_to(&api_sock, "PUT", "/snapshot/load", &json!({
                 "snapshot_path": "golden-snapshot.file",
                 "mem_backend": { "backend_path": "golden-mem.file", "backend_type": "File" },
                 "enable_diff_snapshots": true,
                 "network_overrides": [{ "iface_id": "eth0", "host_dev_name": tap.clone() }],
                 "resume_vm": true,
             }), 300).await?;
-            self.await_agent(&handle, Duration::from_secs(10)).await?;
-            // The snapshot carries the golden VM's IP; re-IP and re-add the
-            // default route (the flush drops it) so siblings don't collide.
-            let _ = self.agent_call(&handle, &json!({
+                self.await_agent(&handle, Duration::from_secs(10)).await?;
+                // The snapshot carries the golden VM's IP; re-IP and re-add the
+                // default route (the flush drops it) so siblings don't collide.
+                let _ = self.agent_call(&handle, &json!({
                 "op": "exec",
                 "cmd": format!(
                     "ip addr flush dev eth0 2>/dev/null; ip addr add {ip}/16 dev eth0 2>/dev/null; \
@@ -1395,14 +1554,15 @@ impl FirecrackerRuntime {
                 ),
                 "background": false,
             })).await;
-            Ok(start.elapsed().as_millis() as u64)
-        }
-        .await;
+                Ok(start.elapsed().as_millis() as u64)
+            }
+            .await;
 
         match booted {
             Ok(ms) => Ok((handle, ms)),
             Err(e) => {
-                let fc_log = std::fs::read_to_string(jail.join("firecracker.log")).unwrap_or_default();
+                let fc_log =
+                    std::fs::read_to_string(jail.join("firecracker.log")).unwrap_or_default();
                 tracing::error!(
                     handle = %handle,
                     error = %e,
@@ -1491,7 +1651,12 @@ impl Runtime for FirecrackerRuntime {
     }
 
     fn vm_net_stats(&self, handle: &str) -> Option<NetStats> {
-        let tap = self.vms.lock().unwrap().get(handle).and_then(|r| r.tap.clone())?;
+        let tap = self
+            .vms
+            .lock()
+            .unwrap()
+            .get(handle)
+            .and_then(|r| r.tap.clone())?;
         // Host tap rx == guest egress, tx == guest ingress (mirrored from the VM).
         let stat = |f: &str| -> u64 {
             std::fs::read_to_string(format!("/sys/class/net/{tap}/statistics/{f}"))
@@ -1499,7 +1664,10 @@ impl Runtime for FirecrackerRuntime {
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(0)
         };
-        Some(NetStats { rx_bytes: stat("rx_bytes"), tx_bytes: stat("tx_bytes") })
+        Some(NetStats {
+            rx_bytes: stat("rx_bytes"),
+            tx_bytes: stat("tx_bytes"),
+        })
     }
 
     fn gc_stale_jails(&self) -> usize {
@@ -1534,13 +1702,21 @@ impl Runtime for FirecrackerRuntime {
         }
         let sock = {
             let vms = self.vms.lock().unwrap();
-            let v = vms.get(handle).ok_or_else(|| anyhow!("unknown vm {handle}"))?;
+            let v = vms
+                .get(handle)
+                .ok_or_else(|| anyhow!("unknown vm {handle}"))?;
             if v.standby {
                 bail!("cannot balloon a standby vm");
             }
             v.api_sock.clone()
         };
-        self.fc_api(&sock, "PATCH", "/balloon", &json!({ "amount_mib": amount_mib })).await?;
+        self.fc_api(
+            &sock,
+            "PATCH",
+            "/balloon",
+            &json!({ "amount_mib": amount_mib }),
+        )
+        .await?;
         if let Some(v) = self.vms.lock().unwrap().get_mut(handle) {
             v.ballooned_mib = amount_mib;
         }
@@ -1575,7 +1751,11 @@ impl Runtime for FirecrackerRuntime {
         })
     }
 
-    fn golden_snapshot_available(&self, image_key: &str, resources: &crate::knobs::Resources) -> bool {
+    fn golden_snapshot_available(
+        &self,
+        image_key: &str,
+        resources: &crate::knobs::Resources,
+    ) -> bool {
         // Jailer-only: a snapshot restores its vsock at the uds path captured at
         // snapshot time. Under the jailer that path is chroot-relative, so every
         // sibling gets its own socket in its own chroot; a direct launch bakes
@@ -1584,7 +1764,10 @@ impl Runtime for FirecrackerRuntime {
         // as absent so creates cold-boot the new userland until the warmer
         // regenerates it.
         self.use_jailer
-            && self.golden_dir(image_key, resources).join("snapshot.file").exists()
+            && self
+                .golden_dir(image_key, resources)
+                .join("snapshot.file")
+                .exists()
             && self.golden_fresh(image_key, resources)
     }
 
@@ -1623,13 +1806,26 @@ impl Runtime for FirecrackerRuntime {
         // restore time rather than cold-boot time.
         if self.golden_snapshot_available(&spec.image_key, &spec.resources) {
             let (handle, _ms) = self.boot_from_golden(spec).await?;
-            return Ok(WarmVm { handle, image_key: spec.image_key.clone(), resources: spec.resources });
+            return Ok(WarmVm {
+                handle,
+                image_key: spec.image_key.clone(),
+                resources: spec.resources,
+            });
         }
         let (handle, _boot_ms, _agent_ms) = self.boot(spec).await?;
-        Ok(WarmVm { handle, image_key: spec.image_key.clone(), resources: spec.resources })
+        Ok(WarmVm {
+            handle,
+            image_key: spec.image_key.clone(),
+            resources: spec.resources,
+        })
     }
 
-    async fn create(&self, spec: &VmSpec, warm: Option<WarmVm>, snapshot_available: bool) -> Result<VmInstance> {
+    async fn create(
+        &self,
+        spec: &VmSpec,
+        warm: Option<WarmVm>,
+        snapshot_available: bool,
+    ) -> Result<VmInstance> {
         let (handle, boot_path, boot_ms) = if let Some(w) = warm {
             // Hot pool: the warm VM already booted. Attach and apply features.
             (w.handle, BootPath::HotPool, 0)
@@ -1660,7 +1856,14 @@ impl Runtime for FirecrackerRuntime {
         } else {
             0
         };
-        Ok(VmInstance { handle, boot_path, boot_ms, image_cache_ms: 0, browser_ready_ms, agent_ms: coding_agent_ms })
+        Ok(VmInstance {
+            handle,
+            boot_path,
+            boot_ms,
+            image_cache_ms: 0,
+            browser_ready_ms,
+            agent_ms: coding_agent_ms,
+        })
     }
 
     async fn exec(&self, handle: &str, req: &ExecRequest) -> Result<ExecResult> {
@@ -1668,26 +1871,46 @@ impl Runtime for FirecrackerRuntime {
         // Merge resident env (startup env + injected secrets) under per-call env.
         let mut merged: std::collections::BTreeMap<String, String> = {
             let vms = self.vms.lock().unwrap();
-            vms.get(handle).map(|v| v.resident_env.clone()).unwrap_or_default()
+            vms.get(handle)
+                .map(|v| v.resident_env.clone())
+                .unwrap_or_default()
         };
         merged.extend(req.env.clone());
         let env: Vec<(String, String)> = merged.into_iter().collect();
         let result = self
-            .agent_call(handle, &json!({
-                "op": "exec",
-                "cmd": req.cmd,
-                "cwd": req.cwd,
-                "env": env,
-                "background": req.background,
-            }))
+            .agent_call(
+                handle,
+                &json!({
+                    "op": "exec",
+                    "cmd": req.cmd,
+                    "cwd": req.cwd,
+                    "env": env,
+                    "background": req.background,
+                }),
+            )
             .await?;
         if req.background {
-            return Ok(ExecResult { exit_code: 0, stdout: result.to_string(), stderr: String::new() });
+            return Ok(ExecResult {
+                exit_code: 0,
+                stdout: result.to_string(),
+                stderr: String::new(),
+            });
         }
         Ok(ExecResult {
-            exit_code: result.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1) as i32,
-            stdout: result.get("stdout").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            stderr: result.get("stderr").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            exit_code: result
+                .get("exit_code")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1) as i32,
+            stdout: result
+                .get("stdout")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            stderr: result
+                .get("stderr")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         })
     }
 
@@ -1701,12 +1924,16 @@ impl Runtime for FirecrackerRuntime {
         // no host-side child to reap.
         let uds = {
             let vms = self.vms.lock().unwrap();
-            vms.get(handle).map(|v| v.vsock_uds.clone()).ok_or_else(|| anyhow!("unknown vm {handle}"))?
+            vms.get(handle)
+                .map(|v| v.vsock_uds.clone())
+                .ok_or_else(|| anyhow!("unknown vm {handle}"))?
         };
         let mut stream = UnixStream::connect(&uds)
             .await
             .with_context(|| format!("connect guest vsock uds {uds:?}"))?;
-        stream.write_all(format!("CONNECT {GUEST_AGENT_VSOCK_PORT}\n").as_bytes()).await?;
+        stream
+            .write_all(format!("CONNECT {GUEST_AGENT_VSOCK_PORT}\n").as_bytes())
+            .await?;
         let mut ack = [0u8; 64];
         let n = stream.read(&mut ack).await?;
         let ack_str = String::from_utf8_lossy(&ack[..n]);
@@ -1714,7 +1941,9 @@ impl Runtime for FirecrackerRuntime {
             bail!("vsock connect rejected: {ack_str}");
         }
         let req = json!({"op": "pty", "cols": 120, "rows": 32});
-        stream.write_all(format!("{}\n", serde_json::to_string(&req)?).as_bytes()).await?;
+        stream
+            .write_all(format!("{}\n", serde_json::to_string(&req)?).as_bytes())
+            .await?;
         // One JSON response line; after it the connection IS the TTY stream.
         let mut line = Vec::new();
         let mut byte = [0u8; 1];
@@ -1725,7 +1954,8 @@ impl Runtime for FirecrackerRuntime {
             }
             line.push(byte[0]);
         }
-        let resp: serde_json::Value = serde_json::from_slice(&line).context("parse pty response")?;
+        let resp: serde_json::Value =
+            serde_json::from_slice(&line).context("parse pty response")?;
         if resp.get("status").and_then(|s| s.as_str()) == Some("error") {
             bail!(
                 "guest agent error: {}",
@@ -1745,25 +1975,44 @@ impl Runtime for FirecrackerRuntime {
         self.bump_mutation(handle);
         let jailed = jail_guest_path(path)?;
         let b64 = base64_encode(bytes);
-        self.agent_call(handle, &json!({"op": "write_file", "path": jailed, "content_b64": b64})).await?;
+        self.agent_call(
+            handle,
+            &json!({"op": "write_file", "path": jailed, "content_b64": b64}),
+        )
+        .await?;
         Ok(())
     }
 
     async fn read_file(&self, handle: &str, path: &str) -> Result<Vec<u8>> {
         let jailed = jail_guest_path(path)?;
-        let result = self.agent_call(handle, &json!({"op": "read_file", "path": jailed})).await?;
-        let b64 = result.get("content_b64").and_then(|v| v.as_str()).unwrap_or("");
+        let result = self
+            .agent_call(handle, &json!({"op": "read_file", "path": jailed}))
+            .await?;
+        let b64 = result
+            .get("content_b64")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         base64_decode(b64)
     }
 
     async fn list_dir(&self, handle: &str, path: &str) -> Result<Vec<DirEntry>> {
         let jailed = jail_guest_path(path)?;
-        let result = self.agent_call(handle, &json!({"op": "list_dir", "path": jailed})).await?;
-        let entries = result.get("entries").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let result = self
+            .agent_call(handle, &json!({"op": "list_dir", "path": jailed}))
+            .await?;
+        let entries = result
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         Ok(entries
             .into_iter()
             .map(|e| DirEntry {
-                name: e.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                name: e
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 dir: e.get("dir").and_then(|v| v.as_bool()).unwrap_or(false),
             })
             .collect())
@@ -1773,7 +2022,12 @@ impl Runtime for FirecrackerRuntime {
         // Services run INSIDE the guest, on its bridge IP (10.200.0.x) — not on
         // the host loopback. The host reaches it directly over wdbr0. Return the
         // guest IP so the preview proxy dials the VM, not the host.
-        let ip = self.vms.lock().unwrap().get(handle).and_then(|r| r.guest_ip.clone());
+        let ip = self
+            .vms
+            .lock()
+            .unwrap()
+            .get(handle)
+            .and_then(|r| r.guest_ip.clone());
         match ip.and_then(|s| s.parse::<std::net::IpAddr>().ok()) {
             Some(ip) => Ok(SocketAddr::new(ip, port)),
             None => Ok(SocketAddr::from(([127, 0, 0, 1], port))), // snapshot/no-tap fallback
@@ -1781,25 +2035,35 @@ impl Runtime for FirecrackerRuntime {
     }
 
     async fn ready_check(&self, handle: &str, url: &str, timeout_seconds: u32) -> Result<()> {
-        self.agent_call(handle, &json!({"op": "ready_http", "url": url, "timeout_seconds": timeout_seconds})).await?;
+        self.agent_call(
+            handle,
+            &json!({"op": "ready_http", "url": url, "timeout_seconds": timeout_seconds}),
+        )
+        .await?;
         Ok(())
     }
 
     async fn pause(&self, handle: &str, _persist: bool) -> Result<()> {
         let sock = {
             let vms = self.vms.lock().unwrap();
-            vms.get(handle).map(|v| v.api_sock.clone()).ok_or_else(|| anyhow!("unknown vm {handle}"))?
+            vms.get(handle)
+                .map(|v| v.api_sock.clone())
+                .ok_or_else(|| anyhow!("unknown vm {handle}"))?
         };
-        self.fc_api(&sock, "PATCH", "/vm", &json!({"state": "Paused"})).await
+        self.fc_api(&sock, "PATCH", "/vm", &json!({"state": "Paused"}))
+            .await
     }
 
     async fn resume(&self, handle: &str) -> Result<u64> {
         let sock = {
             let vms = self.vms.lock().unwrap();
-            vms.get(handle).map(|v| v.api_sock.clone()).ok_or_else(|| anyhow!("unknown vm {handle}"))?
+            vms.get(handle)
+                .map(|v| v.api_sock.clone())
+                .ok_or_else(|| anyhow!("unknown vm {handle}"))?
         };
         let start = Instant::now();
-        self.fc_api(&sock, "PATCH", "/vm", &json!({"state": "Resumed"})).await?;
+        self.fc_api(&sock, "PATCH", "/vm", &json!({"state": "Resumed"}))
+            .await?;
         Ok(start.elapsed().as_millis() as u64)
     }
 
@@ -1811,7 +2075,9 @@ impl Runtime for FirecrackerRuntime {
         // `restore` can bring the exact same VM back.
         let (sock, jail, pid, tap, has_secrets, snapshotted) = {
             let vms = self.vms.lock().unwrap();
-            let v = vms.get(handle).ok_or_else(|| anyhow!("unknown vm {handle}"))?;
+            let v = vms
+                .get(handle)
+                .ok_or_else(|| anyhow!("unknown vm {handle}"))?;
             (
                 v.api_sock.clone(),
                 v.api_sock.parent().unwrap().to_path_buf(),
@@ -1833,7 +2099,11 @@ impl Runtime for FirecrackerRuntime {
         // Free the guest RAM: SIGKILL Firecracker. The mem.file on disk now holds
         // the guest memory image.
         if let Some(pid) = pid {
-            let _ = tokio::process::Command::new("kill").arg("-9").arg(pid.to_string()).status().await;
+            let _ = tokio::process::Command::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .status()
+                .await;
         }
         // Reclaim the tap too; `restore` recreates it (the bug the roadmap calls
         // out: a resumed VM must get its host networking back).
@@ -1859,7 +2129,9 @@ impl Runtime for FirecrackerRuntime {
         self.ensure_record_loaded(handle);
         let (api_sock, jail, vsock_uds, tap, tap_idx, volumes, image_key) = {
             let vms = self.vms.lock().unwrap();
-            let v = vms.get(handle).ok_or_else(|| anyhow!("unknown vm {handle} (no persisted record)"))?;
+            let v = vms
+                .get(handle)
+                .ok_or_else(|| anyhow!("unknown vm {handle} (no persisted record)"))?;
             (
                 v.api_sock.clone(),
                 v.api_sock.parent().unwrap().to_path_buf(),
@@ -1896,8 +2168,13 @@ impl Runtime for FirecrackerRuntime {
                     let n = self.next_restore.fetch_add(1, Ordering::SeqCst);
                     let jail_id = format!("{}-r{}", handle.replace('_', "-"), n);
                     let uid = self.jailer_uid_base + tap_idx.unwrap_or(0);
-                    let new_chroot = self.chroot_base.join("firecracker").join(&jail_id).join("root");
-                    let log = std::fs::File::create(jail.join("restore.log")).context("restore log")?;
+                    let new_chroot = self
+                        .chroot_base
+                        .join("firecracker")
+                        .join(&jail_id)
+                        .join("root");
+                    let log =
+                        std::fs::File::create(jail.join("restore.log")).context("restore log")?;
                     let log2 = log.try_clone()?;
                     let pid = tokio::process::Command::new(&self.jailer_bin)
                         .args(["--id", &jail_id])
@@ -1906,8 +2183,10 @@ impl Runtime for FirecrackerRuntime {
                         .args(["--chroot-base-dir", self.chroot_base.to_str().unwrap()])
                         .args(["--", "--api-sock", "api.sock"])
                         .args(self.no_seccomp.then_some("--no-seccomp"))
-                        .stdout(log).stderr(log2)
-                        .spawn().context("relaunch jailer for restore")?
+                        .stdout(log)
+                        .stderr(log2)
+                        .spawn()
+                        .context("relaunch jailer for restore")?
                         .id();
                     poll_until(Duration::from_secs(4), || new_chroot.exists()).await;
                     (uid, new_chroot, pid)
@@ -1944,13 +2223,25 @@ impl Runtime for FirecrackerRuntime {
             // chown there would mutate the one inode every sandbox maps.
             let owner = format!("{uid}:{uid}");
             for name in ["snapshot.file", "mem.file"] {
-                let _ = tokio::process::Command::new("chown").arg(&owner).arg(new_chroot.join(name)).status().await;
+                let _ = tokio::process::Command::new("chown")
+                    .arg(&owner)
+                    .arg(new_chroot.join(name))
+                    .status()
+                    .await;
             }
             if !self.shared_image(&image_key) {
-                let _ = tokio::process::Command::new("chown").arg(&owner).arg(new_chroot.join("rootfs.ext4")).status().await;
+                let _ = tokio::process::Command::new("chown")
+                    .arg(&owner)
+                    .arg(new_chroot.join("rootfs.ext4"))
+                    .status()
+                    .await;
             }
             for v in &volumes {
-                let _ = tokio::process::Command::new("chown").arg(&owner).arg(new_chroot.join(&v.file)).status().await;
+                let _ = tokio::process::Command::new("chown")
+                    .arg(&owner)
+                    .arg(new_chroot.join(&v.file))
+                    .status()
+                    .await;
             }
             let new_api = new_chroot.join("api.sock");
             poll_until(Duration::from_secs(4), || new_api.exists()).await;
@@ -1968,12 +2259,19 @@ impl Runtime for FirecrackerRuntime {
             // recreated at its stored relative "vsock.sock" inside this chroot).
             // Configuring anything beforehand makes Firecracker reject the load
             // ("not allowed after configuring boot-specific resources").
-            self.fc_api_to(&new_api, "PUT", "/snapshot/load", &json!({
-                "snapshot_path": "snapshot.file",
-                "mem_backend": { "backend_path": "mem.file", "backend_type": "File" },
-                "enable_diff_snapshots": true,
-                "resume_vm": true,
-            }), 300).await?;
+            self.fc_api_to(
+                &new_api,
+                "PUT",
+                "/snapshot/load",
+                &json!({
+                    "snapshot_path": "snapshot.file",
+                    "mem_backend": { "backend_path": "mem.file", "backend_type": "File" },
+                    "enable_diff_snapshots": true,
+                    "resume_vm": true,
+                }),
+                300,
+            )
+            .await?;
             if let Some(v) = self.vms.lock().unwrap().get_mut(handle) {
                 v.api_sock = new_api;
                 v.vsock_uds = new_chroot.join("vsock.sock");
@@ -2055,13 +2353,21 @@ impl Runtime for FirecrackerRuntime {
     async fn snapshot(&self, handle: &str) -> Result<SnapshotArtifact> {
         let (sock, jail) = {
             let vms = self.vms.lock().unwrap();
-            let v = vms.get(handle).ok_or_else(|| anyhow!("unknown vm {handle}"))?;
-            (v.api_sock.clone(), v.api_sock.parent().unwrap().to_path_buf())
+            let v = vms
+                .get(handle)
+                .ok_or_else(|| anyhow!("unknown vm {handle}"))?;
+            (
+                v.api_sock.clone(),
+                v.api_sock.parent().unwrap().to_path_buf(),
+            )
         };
         let (snap_file, mem_file) = self.write_snapshot(&sock, &jail, false).await?;
         let bytes = std::fs::metadata(&mem_file).map(|m| m.len()).unwrap_or(0)
             + std::fs::metadata(&snap_file).map(|m| m.len()).unwrap_or(0);
-        Ok(SnapshotArtifact { handle: ids::snapshot_id(), storage_bytes: bytes })
+        Ok(SnapshotArtifact {
+            handle: ids::snapshot_id(),
+            storage_bytes: bytes,
+        })
     }
 
     async fn fork(&self, parent_handle: &str, child_spec: &VmSpec) -> Result<VmInstance> {
@@ -2070,7 +2376,9 @@ impl Runtime for FirecrackerRuntime {
         // and (re-IP'd) guest networking.
         let (parent_sock, parent_jail, parent_image, has_secrets, mutation_seq, cache_seq) = {
             let vms = self.vms.lock().unwrap();
-            let v = vms.get(parent_handle).ok_or_else(|| anyhow!("unknown parent vm {parent_handle}"))?;
+            let v = vms
+                .get(parent_handle)
+                .ok_or_else(|| anyhow!("unknown parent vm {parent_handle}"))?;
             (
                 v.api_sock.clone(),
                 v.api_sock.parent().unwrap().to_path_buf(),
@@ -2081,7 +2389,9 @@ impl Runtime for FirecrackerRuntime {
             )
         };
         if has_secrets {
-            bail!("cannot fork a sandbox with resident secrets; they would be copied into the child");
+            bail!(
+                "cannot fork a sandbox with resident secrets; they would be copied into the child"
+            );
         }
         let start = Instant::now();
 
@@ -2101,8 +2411,10 @@ impl Runtime for FirecrackerRuntime {
             tracing::info!(parent = %parent_handle, "fork: reusing cached parent snapshot");
         } else {
             // Snapshot the parent, then resume it so the fork is non-disruptive.
-            self.write_snapshot(&parent_sock, &parent_jail, false).await?;
-            self.fc_api(&parent_sock, "PATCH", "/vm", &json!({"state": "Resumed"})).await?;
+            self.write_snapshot(&parent_sock, &parent_jail, false)
+                .await?;
+            self.fc_api(&parent_sock, "PATCH", "/vm", &json!({"state": "Resumed"}))
+                .await?;
             if let Some(v) = self.vms.lock().unwrap().get_mut(parent_handle) {
                 v.fork_cache_seq = Some(v.mutation_seq);
                 // A full mem.file base now exists; the parent's next standby can
@@ -2130,8 +2442,13 @@ impl Runtime for FirecrackerRuntime {
         let (child_sock, child_vsock, pid) = if self.use_jailer {
             let jail_id = child.replace('_', "-");
             let uid = self.jailer_uid_base + tap_idx;
-            let new_chroot = self.chroot_base.join("firecracker").join(&jail_id).join("root");
-            let log = std::fs::File::create(child_jail.join("firecracker.log")).context("child fc log")?;
+            let new_chroot = self
+                .chroot_base
+                .join("firecracker")
+                .join(&jail_id)
+                .join("root");
+            let log = std::fs::File::create(child_jail.join("firecracker.log"))
+                .context("child fc log")?;
             let log2 = log.try_clone()?;
             let pid = tokio::process::Command::new(&self.jailer_bin)
                 .args(["--id", &jail_id])
@@ -2140,8 +2457,10 @@ impl Runtime for FirecrackerRuntime {
                 .args(["--chroot-base-dir", self.chroot_base.to_str().unwrap()])
                 .args(["--", "--api-sock", "api.sock"])
                 .args(self.no_seccomp.then_some("--no-seccomp"))
-                .stdout(log).stderr(log2)
-                .spawn().context("spawn child jailer")?
+                .stdout(log)
+                .stderr(log2)
+                .spawn()
+                .context("spawn child jailer")?
                 .id();
             poll_until(Duration::from_secs(4), || new_chroot.exists()).await;
             // mem.file and rootfs are the big artifacts — reflink-copy them so the
@@ -2149,32 +2468,57 @@ impl Runtime for FirecrackerRuntime {
             // instead of a multi-second full read+write of the 2 GB mem image.
             let _ = std::fs::copy(&parent_snap, new_chroot.join("snapshot.file"));
             let reflink = |from: PathBuf, to: PathBuf| async move {
-                let _ = tokio::process::Command::new("cp").args(["--reflink=auto"]).arg(from).arg(to).status().await;
+                let _ = tokio::process::Command::new("cp")
+                    .args(["--reflink=auto"])
+                    .arg(from)
+                    .arg(to)
+                    .status()
+                    .await;
             };
             reflink(parent_mem.clone(), new_chroot.join("mem.file")).await;
-            reflink(parent_jail.join("rootfs.ext4"), new_chroot.join("rootfs.ext4")).await;
+            reflink(
+                parent_jail.join("rootfs.ext4"),
+                new_chroot.join("rootfs.ext4"),
+            )
+            .await;
             let owner = format!("{uid}:{uid}");
-            let _ = tokio::process::Command::new("chown").arg("-R").arg(&owner).arg(&new_chroot).status().await;
+            let _ = tokio::process::Command::new("chown")
+                .arg("-R")
+                .arg(&owner)
+                .arg(&new_chroot)
+                .status()
+                .await;
             let new_api = new_chroot.join("api.sock");
             poll_until(Duration::from_secs(4), || new_api.exists()).await;
             (new_api, new_chroot.join("vsock.sock"), pid)
         } else {
             let _ = std::fs::copy(&parent_snap, child_jail.join("snapshot.file"));
-            let _ = tokio::process::Command::new("cp").args(["--reflink=auto"])
-                .arg(&parent_mem).arg(child_jail.join("mem.file")).status().await;
+            let _ = tokio::process::Command::new("cp")
+                .args(["--reflink=auto"])
+                .arg(&parent_mem)
+                .arg(child_jail.join("mem.file"))
+                .status()
+                .await;
             if parent_jail.join("overlay.ext4").exists() {
-                let _ = tokio::process::Command::new("cp").args(["--reflink=auto"])
-                    .arg(parent_jail.join("overlay.ext4")).arg(child_jail.join("overlay.ext4")).status().await;
+                let _ = tokio::process::Command::new("cp")
+                    .args(["--reflink=auto"])
+                    .arg(parent_jail.join("overlay.ext4"))
+                    .arg(child_jail.join("overlay.ext4"))
+                    .status()
+                    .await;
             }
             let child_sock = child_jail.join("api.sock");
             let _ = std::fs::remove_file(&child_sock);
-            let log = std::fs::File::create(child_jail.join("firecracker.log")).context("child fc log")?;
+            let log = std::fs::File::create(child_jail.join("firecracker.log"))
+                .context("child fc log")?;
             let log2 = log.try_clone()?;
             let pid = tokio::process::Command::new(&self.firecracker_bin)
                 .args(["--api-sock", child_sock.to_str().unwrap()])
                 .args(self.no_seccomp.then_some("--no-seccomp"))
-                .stdout(log).stderr(log2)
-                .spawn().context("spawn child firecracker")?
+                .stdout(log)
+                .stderr(log2)
+                .spawn()
+                .context("spawn child firecracker")?
                 .id();
             poll_until(Duration::from_secs(4), || child_sock.exists()).await;
             (child_sock, child_jail.join("vsock.sock"), pid)
@@ -2187,7 +2531,10 @@ impl Runtime for FirecrackerRuntime {
             ("snapshot.file".to_string(), "mem.file".to_string())
         } else {
             (
-                child_jail.join("snapshot.file").to_string_lossy().into_owned(),
+                child_jail
+                    .join("snapshot.file")
+                    .to_string_lossy()
+                    .into_owned(),
                 child_jail.join("mem.file").to_string_lossy().into_owned(),
             )
         };
@@ -2200,13 +2547,20 @@ impl Runtime for FirecrackerRuntime {
         // still holding (fork keeps the parent live) — so reopening it during
         // restore would hit EBUSY. `network_overrides` remaps eth0 to the child's
         // own tap at load time, so it opens a free device and resumes directly.
-        self.fc_api_to(&child_sock, "PUT", "/snapshot/load", &json!({
-            "snapshot_path": snap_api,
-            "mem_backend": { "backend_path": mem_api, "backend_type": "File" },
-            "enable_diff_snapshots": true,
-            "network_overrides": [{ "iface_id": "eth0", "host_dev_name": tap.clone() }],
-            "resume_vm": true,
-        }), 300).await?;
+        self.fc_api_to(
+            &child_sock,
+            "PUT",
+            "/snapshot/load",
+            &json!({
+                "snapshot_path": snap_api,
+                "mem_backend": { "backend_path": mem_api, "backend_type": "File" },
+                "enable_diff_snapshots": true,
+                "network_overrides": [{ "iface_id": "eth0", "host_dev_name": tap.clone() }],
+                "resume_vm": true,
+            }),
+            300,
+        )
+        .await?;
 
         self.vms.lock().unwrap().insert(
             child.clone(),
@@ -2270,14 +2624,22 @@ impl Runtime for FirecrackerRuntime {
         if let Some(r) = record {
             if let Some(pid) = r.pid {
                 // SIGKILL Firecracker; it tears the VM down with it.
-                let _ = tokio::process::Command::new("kill").arg("-9").arg(pid.to_string()).status().await;
+                let _ = tokio::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .status()
+                    .await;
             }
             if let Some(tap) = r.tap {
                 let _ = run_ip(&["link", "del", &tap]).await;
             }
             // api_sock = <chroot_base>/firecracker/<id>/root/api.sock → remove the
             // <id> directory.
-            active_chroot = r.api_sock.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+            active_chroot = r
+                .api_sock
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf());
             let _ = r.image_key; // (kept for future per-image teardown hooks)
         }
         self.workspaces.remove(handle).ok();
@@ -2297,7 +2659,8 @@ impl Runtime for FirecrackerRuntime {
         std::fs::create_dir_all(&self.volumes_dir).context("create volumes dir")?;
         let path = self.volumes_dir.join(format!("{volume_id}.ext4"));
         let f = std::fs::File::create(&path).context("create volume image")?;
-        f.set_len(size_gb as u64 * 1024 * 1024 * 1024).context("size volume image")?;
+        f.set_len(size_gb as u64 * 1024 * 1024 * 1024)
+            .context("size volume image")?;
         drop(f);
         let label = ids::volume_label(volume_id);
         let out = tokio::process::Command::new("mkfs.ext4")
@@ -2369,11 +2732,23 @@ const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456
 fn base64_encode(input: &[u8]) -> String {
     let mut out = String::new();
     for chunk in input.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         out.push(B64[(b[0] >> 2) as usize] as char);
         out.push(B64[(((b[0] & 0x03) << 4) | (b[1] >> 4)) as usize] as char);
-        out.push(if chunk.len() > 1 { B64[(((b[1] & 0x0f) << 2) | (b[2] >> 6)) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[(b[2] & 0x3f) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64[(((b[1] & 0x0f) << 2) | (b[2] >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(b[2] & 0x3f) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -2383,7 +2758,10 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
     for (i, &c) in B64.iter().enumerate() {
         table[c as usize] = i as u8;
     }
-    let clean: Vec<u8> = input.bytes().filter(|&b| b != b'=' && !b.is_ascii_whitespace()).collect();
+    let clean: Vec<u8> = input
+        .bytes()
+        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
+        .collect();
     let mut out = Vec::new();
     for chunk in clean.chunks(4) {
         let mut acc = 0u32;
@@ -2411,11 +2789,12 @@ mod tests {
     use crate::config::RuntimeConfig;
 
     fn cfg_at(dir: &Path) -> RuntimeConfig {
-        let mut cfg = RuntimeConfig::default();
-        cfg.workspace_dir = dir.to_path_buf();
-        cfg.images_dir = dir.join("images");
-        cfg.volumes_dir = dir.join("volumes");
-        cfg
+        RuntimeConfig {
+            workspace_dir: dir.to_path_buf(),
+            images_dir: dir.join("images"),
+            volumes_dir: dir.join("volumes"),
+            ..Default::default()
+        }
     }
 
     /// A record as `standby` persists it: process killed (pid None), snapshot
@@ -2456,17 +2835,37 @@ mod tests {
         // A parked standby VM from the previous daemon run: tap_idx 7, cid 11,
         // its artifacts in restore chroot "...-r2".
         let rec = standby_record(&chroot_base, "vm-sb-x-r2", 7, 11);
-        std::fs::create_dir_all(chroot_base.join("firecracker").join("vm-sb-x-r2").join("root")).unwrap();
+        std::fs::create_dir_all(
+            chroot_base
+                .join("firecracker")
+                .join("vm-sb-x-r2")
+                .join("root"),
+        )
+        .unwrap();
         write_record(&chroot_base, "vm_sb_x", &rec);
 
         let rt = FirecrackerRuntime::new(&cfg_at(tmp.path()));
         // The record is resident immediately (not lazily on first restore).
-        assert!(rt.vms.lock().unwrap().contains_key("vm_sb_x"), "standby record must rehydrate at startup");
+        assert!(
+            rt.vms.lock().unwrap().contains_key("vm_sb_x"),
+            "standby record must rehydrate at startup"
+        );
         // Counters resume ABOVE what survivors still hold: a fresh boot must not
         // reuse wdtap7/its guest IP, the CID, or restore chroot suffix -r2.
-        assert_eq!(rt.next_tap.load(Ordering::SeqCst), 8, "next_tap must clear the survivor's tap_idx");
-        assert!(rt.next_cid.load(Ordering::SeqCst) >= 12, "next_cid must clear the survivor's cid");
-        assert_eq!(rt.next_restore.load(Ordering::SeqCst), 3, "next_restore must clear existing -rN chroots");
+        assert_eq!(
+            rt.next_tap.load(Ordering::SeqCst),
+            8,
+            "next_tap must clear the survivor's tap_idx"
+        );
+        assert!(
+            rt.next_cid.load(Ordering::SeqCst) >= 12,
+            "next_cid must clear the survivor's cid"
+        );
+        assert_eq!(
+            rt.next_restore.load(Ordering::SeqCst),
+            3,
+            "next_restore must clear existing -rN chroots"
+        );
     }
 
     #[test]
@@ -2474,7 +2873,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let chroot_base = tmp.path().join("jail");
         let rec = standby_record(&chroot_base, "vm-sb-live-r0", 3, 5);
-        std::fs::create_dir_all(chroot_base.join("firecracker").join("vm-sb-live-r0").join("root")).unwrap();
+        std::fs::create_dir_all(
+            chroot_base
+                .join("firecracker")
+                .join("vm-sb-live-r0")
+                .join("root"),
+        )
+        .unwrap();
         write_record(&chroot_base, "vm_sb_live", &rec);
         // Orphans from dead VMs: a jail dir without a record and a chroot no
         // record points at.
@@ -2490,7 +2895,10 @@ mod tests {
             "standby record must survive the sweep after a restart"
         );
         assert!(
-            chroot_base.join("firecracker").join("vm-sb-live-r0").exists(),
+            chroot_base
+                .join("firecracker")
+                .join("vm-sb-live-r0")
+                .exists(),
             "standby snapshot chroot must survive the sweep after a restart"
         );
         assert!(!chroot_base.join("vm_sb_dead").exists());
@@ -2534,13 +2942,17 @@ mod pool_tests {
         // the leftover api.sock fools an existence poll — observed on the node).
         let tmp = tempfile::tempdir().unwrap();
         let chroot_base = tmp.path().join("jail");
-        std::fs::create_dir_all(chroot_base.join("firecracker").join("pool-0").join("root")).unwrap();
-        std::fs::create_dir_all(chroot_base.join("firecracker").join("pool-7").join("root")).unwrap();
+        std::fs::create_dir_all(chroot_base.join("firecracker").join("pool-0").join("root"))
+            .unwrap();
+        std::fs::create_dir_all(chroot_base.join("firecracker").join("pool-7").join("root"))
+            .unwrap();
         // A restore chroot must be left alone (and bump the counter).
         std::fs::create_dir_all(chroot_base.join("firecracker").join("vm-sbx-x-r1")).unwrap();
 
-        let mut cfg = RuntimeConfig::default();
-        cfg.workspace_dir = tmp.path().to_path_buf();
+        let cfg = RuntimeConfig {
+            workspace_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
         let rt = FirecrackerRuntime::new(&cfg);
 
         assert!(!chroot_base.join("firecracker").join("pool-0").exists());

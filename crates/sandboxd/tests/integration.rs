@@ -81,7 +81,10 @@ async fn one_node_acceptance_flow() {
     let id = sb["id"].as_str().unwrap().to_string();
     assert_eq!(sb["image"], "base");
     assert_eq!(sb["resources"]["memory_mb"], 2048);
-    assert_eq!(sb["boot_path"], "hot_pool", "warmed pool should serve a hot VM");
+    assert_eq!(
+        sb["boot_path"], "hot_pool",
+        "warmed pool should serve a hot VM"
+    );
     assert_eq!(sb["price"]["resource_units"], 1.0);
 
     // --- exec echo ok ---
@@ -180,14 +183,21 @@ async fn concurrent_resume_does_not_double_bill() {
 
     // Fire two resumes concurrently.
     let (r1, r2) = tokio::join!(
-        c.post(format!("{base}/v1/sandboxes/{id}/resume")).header("authorization", &auth).send(),
-        c.post(format!("{base}/v1/sandboxes/{id}/resume")).header("authorization", &auth).send(),
+        c.post(format!("{base}/v1/sandboxes/{id}/resume"))
+            .header("authorization", &auth)
+            .send(),
+        c.post(format!("{base}/v1/sandboxes/{id}/resume"))
+            .header("authorization", &auth)
+            .send(),
     );
     let s1 = r1.unwrap().status();
     let s2 = r2.unwrap().status();
     // Exactly one wins (200); the loser gets 409 (or both serialize to 200, but
     // never two open intervals).
-    assert!(s1.is_success() || s2.is_success(), "at least one resume should win");
+    assert!(
+        s1.is_success() || s2.is_success(),
+        "at least one resume should win"
+    );
 
     // The sandbox must end up running with exactly one accruing interval.
     let usage: serde_json::Value = c
@@ -199,8 +209,12 @@ async fn concurrent_resume_does_not_double_bill() {
         .json()
         .await
         .unwrap();
-    let mine: Vec<_> = usage["sandboxes"].as_array().unwrap().iter()
-        .filter(|s| s["sandbox_id"] == serde_json::json!(id)).collect();
+    let mine: Vec<_> = usage["sandboxes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["sandbox_id"] == serde_json::json!(id))
+        .collect();
     // One usage summary row for the sandbox (intervals are merged per-sandbox in
     // the view, but the cost must reflect a single running stream, not double).
     assert_eq!(mine.len(), 1, "exactly one usage row for the sandbox");
@@ -222,10 +236,18 @@ async fn secrets_inject_and_snapshot_is_refused() {
     let list: serde_json::Value = c
         .get(format!("{base}/v1/secrets"))
         .header("authorization", &auth)
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     let body = serde_json::to_string(&list).unwrap();
     assert!(body.contains("MY_TOKEN"));
-    assert!(!body.contains("top-secret-xyz"), "secret value must never be returned");
+    assert!(
+        !body.contains("top-secret-xyz"),
+        "secret value must never be returned"
+    );
 
     // Create a sandbox that references the secret + an inline ephemeral file.
     let sb: serde_json::Value = c
@@ -235,7 +257,12 @@ async fn secrets_inject_and_snapshot_is_refused() {
             "files": [{"path": "note.txt", "content": "hi"}],
             "startup": {"secrets": ["MY_TOKEN"]}
         }))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     let id = sb["id"].as_str().unwrap().to_string();
     assert_eq!(sb["secret_names"], serde_json::json!(["MY_TOKEN"]));
 
@@ -244,7 +271,12 @@ async fn secrets_inject_and_snapshot_is_refused() {
         .post(format!("{base}/v1/sandboxes/{id}/exec"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"cmd": "echo $MY_TOKEN && cat note.txt"}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert!(out["stdout"].as_str().unwrap().contains("top-secret-xyz"));
     assert!(out["stdout"].as_str().unwrap().contains("hi"));
 
@@ -252,7 +284,9 @@ async fn secrets_inject_and_snapshot_is_refused() {
     let snap = c
         .post(format!("{base}/v1/sandboxes/{id}/snapshot"))
         .header("authorization", &auth)
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(snap.status(), 409);
 }
 
@@ -267,7 +301,9 @@ async fn docker_requires_capable_image() {
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"docker": {"enabled": true}}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 400);
 
     // heavy-build with explicit resources -> accepted, docker flagged.
@@ -279,7 +315,12 @@ async fn docker_requires_capable_image() {
             "resources": {"cpu": 2, "memory_mb": 8192, "disk_gb": 32},
             "docker": {"enabled": true}
         }))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(sb["docker"], serde_json::json!(true));
 }
 
@@ -297,14 +338,18 @@ async fn malformed_create_body_is_rejected_not_silently_defaulted() {
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"docker": true})) // wrong shape
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 400, "a malformed create body must be rejected");
 
     // An empty body is still the valid no-arg default create.
     let r = c
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 201, "no-body create must still default cleanly");
 }
 
@@ -319,7 +364,12 @@ async fn coding_agent_is_opt_in_and_validated() {
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert!(plain.get("coding_agent").is_none());
 
     // An unknown agent kind is rejected.
@@ -327,7 +377,9 @@ async fn coding_agent_is_opt_in_and_validated() {
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"coding_agent": {"enabled": true, "kind": "cursor"}}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 400);
 
     // Opting in installs opencode (works on the base image) and is reflected.
@@ -335,7 +387,12 @@ async fn coding_agent_is_opt_in_and_validated() {
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"coding_agent": {"enabled": true}}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(sb["coding_agent"], serde_json::json!("opencode"));
 }
 
@@ -396,51 +453,95 @@ async fn standby_preserves_state_and_auto_resumes() {
     let id = c
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
-        .send().await.unwrap()
-        .json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str().unwrap().to_string();
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Write a file so we can prove disk state survives the snapshot/restore.
     c.put(format!("{base}/v1/sandboxes/{id}/files"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"path": "keep.txt", "content": "survives"}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
 
     // Drive the reaper's decision directly (the real window is >= 30s).
     let sb = state.store.get_sandbox(&id).unwrap().unwrap();
     let org_id = sb.org_id.clone();
-    let parked = sandboxd::service::standby_sandbox(&state, sb).await.expect("standby");
+    let parked = sandboxd::service::standby_sandbox(&state, sb)
+        .await
+        .expect("standby");
     assert_eq!(parked.state.as_str(), "standby");
 
     // The API reports standby and it bills $0: no open billing interval remains.
     let view: serde_json::Value = c
         .get(format!("{base}/v1/sandboxes/{id}"))
         .header("authorization", &auth)
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(view["state"], "standby");
     assert_eq!(view["cost_estimate_usd"], serde_json::json!(0.0));
-    let open_now = state.store.usage_for_org(&org_id).unwrap()
-        .into_iter().filter(|iv| iv.sandbox_id == id && iv.ended_at.is_none()).count();
-    assert_eq!(open_now, 0, "standby must close the billing interval ($0 while parked)");
+    let open_now = state
+        .store
+        .usage_for_org(&org_id)
+        .unwrap()
+        .into_iter()
+        .filter(|iv| iv.sandbox_id == id && iv.ended_at.is_none())
+        .count();
+    assert_eq!(
+        open_now, 0,
+        "standby must close the billing interval ($0 while parked)"
+    );
 
     // First request auto-resumes; the file written before standby is still there.
     let out: serde_json::Value = c
         .post(format!("{base}/v1/sandboxes/{id}/exec"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"cmd": "cat keep.txt"}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(out["stdout"], "survives", "disk state must survive standby");
 
     // Back to running, fast, and billing again.
     let view: serde_json::Value = c
         .get(format!("{base}/v1/sandboxes/{id}"))
         .header("authorization", &auth)
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(view["state"], "running");
-    assert!(view["timings"]["ready_ms"].as_u64().unwrap() < 200, "resume < 200ms (Phase 1 target)");
-    let open_after = state.store.usage_for_org(&org_id).unwrap()
-        .into_iter().filter(|iv| iv.sandbox_id == id && iv.ended_at.is_none()).count();
-    assert_eq!(open_after, 1, "auto-resume reopens exactly one billing interval");
+    assert!(
+        view["timings"]["ready_ms"].as_u64().unwrap() < 200,
+        "resume < 200ms (Phase 1 target)"
+    );
+    let open_after = state
+        .store
+        .usage_for_org(&org_id)
+        .unwrap()
+        .into_iter()
+        .filter(|iv| iv.sandbox_id == id && iv.ended_at.is_none())
+        .count();
+    assert_eq!(
+        open_after, 1,
+        "auto-resume reopens exactly one billing interval"
+    );
 }
 
 #[tokio::test]
@@ -455,13 +556,26 @@ async fn benchmark_harness_separates_boot_paths() {
         .post(format!("{base}/v1/benchmarks/run"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"image": "base", "iterations": 1}))
-        .send().await.unwrap().json().await.unwrap();
-    assert!(res["ran"].as_u64().unwrap() >= 3, "one iteration measures all three paths");
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        res["ran"].as_u64().unwrap() >= 3,
+        "one iteration measures all three paths"
+    );
 
     let table: serde_json::Value = c
         .get(format!("{base}/v1/benchmarks"))
         .header("authorization", &auth)
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     let series = table["series"].as_array().unwrap();
     let find = |path: &str| series.iter().find(|s| s["boot_path"] == path).cloned();
     let cold = find("cold_boot").expect("cold_boot series");
@@ -471,9 +585,15 @@ async fn benchmark_harness_separates_boot_paths() {
     // Paths are reported separately, with the expected ordering.
     let p50 = |v: &serde_json::Value| v["ready_ms_p50"].as_u64().unwrap();
     assert!(p50(&hot) < p50(&cold), "hot_pool must beat cold_boot");
-    assert!(p50(&restore) < p50(&cold), "snapshot_restore must beat cold_boot");
+    assert!(
+        p50(&restore) < p50(&cold),
+        "snapshot_restore must beat cold_boot"
+    );
     // The simulated optimized restore meets the Phase 2 target.
-    assert!(restore["ready_ms_p90"].as_u64().unwrap() <= 50, "snapshot_restore p90 <= 50ms (simulated)");
+    assert!(
+        restore["ready_ms_p90"].as_u64().unwrap() <= 50,
+        "snapshot_restore p90 <= 50ms (simulated)"
+    );
 }
 
 #[tokio::test]
@@ -487,57 +607,100 @@ async fn fork_clones_an_instant_sibling() {
     let parent_id = c
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
-        .send().await.unwrap()
-        .json::<serde_json::Value>().await.unwrap()["id"]
-        .as_str().unwrap().to_string();
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Seed state on the parent that the fork must inherit.
     c.put(format!("{base}/v1/sandboxes/{parent_id}/files"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"path": "inherited.txt", "content": "from-parent"}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
 
     // Fork.
     let resp = c
         .post(format!("{base}/v1/sandboxes/{parent_id}/fork"))
         .header("authorization", &auth)
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 201);
     let child: serde_json::Value = resp.json().await.unwrap();
     let child_id = child["id"].as_str().unwrap().to_string();
     assert_ne!(child_id, parent_id, "fork must produce a new sandbox id");
     assert_eq!(child["state"], "running");
-    assert_eq!(child["boot_path"], "fork", "fork must report its own boot path");
+    assert_eq!(
+        child["boot_path"], "fork",
+        "fork must report its own boot path"
+    );
 
     // The child starts from the parent's disk state.
     let out: serde_json::Value = c
         .post(format!("{base}/v1/sandboxes/{child_id}/exec"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"cmd": "cat inherited.txt"}))
-        .send().await.unwrap().json().await.unwrap();
-    assert_eq!(out["stdout"], "from-parent", "child inherits the parent's disk");
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        out["stdout"], "from-parent",
+        "child inherits the parent's disk"
+    );
 
     // Child and parent are independent: writing in the child does not touch the
     // parent, and deleting the child leaves the parent running.
     c.put(format!("{base}/v1/sandboxes/{child_id}/files"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"path": "inherited.txt", "content": "child-only"}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     let parent_out: serde_json::Value = c
         .post(format!("{base}/v1/sandboxes/{parent_id}/exec"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"cmd": "cat inherited.txt"}))
-        .send().await.unwrap().json().await.unwrap();
-    assert_eq!(parent_out["stdout"], "from-parent", "parent disk is unaffected by child writes");
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        parent_out["stdout"], "from-parent",
+        "parent disk is unaffected by child writes"
+    );
 
-    let del = c.delete(format!("{base}/v1/sandboxes/{child_id}"))
-        .header("authorization", &auth).send().await.unwrap();
+    let del = c
+        .delete(format!("{base}/v1/sandboxes/{child_id}"))
+        .header("authorization", &auth)
+        .send()
+        .await
+        .unwrap();
     assert!(del.status().is_success());
     let parent_view: serde_json::Value = c
         .get(format!("{base}/v1/sandboxes/{parent_id}"))
         .header("authorization", &auth)
-        .send().await.unwrap().json().await.unwrap();
-    assert_eq!(parent_view["state"], "running", "parent survives the child's deletion");
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        parent_view["state"], "running",
+        "parent survives the child's deletion"
+    );
 }
 
 #[tokio::test]
@@ -557,15 +720,25 @@ async fn standby_survives_control_plane_restart() {
         let id = c
             .post(format!("{base}/v1/sandboxes"))
             .header("authorization", &auth)
-            .send().await.unwrap()
-            .json::<serde_json::Value>().await.unwrap()["id"]
-            .as_str().unwrap().to_string();
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         c.put(format!("{base}/v1/sandboxes/{id}/files"))
             .header("authorization", &auth)
             .json(&serde_json::json!({"path": "persist.txt", "content": "across-restart"}))
-            .send().await.unwrap();
+            .send()
+            .await
+            .unwrap();
         let sb = state.store.get_sandbox(&id).unwrap().unwrap();
-        let parked = sandboxd::service::standby_sandbox(&state, sb).await.expect("standby");
+        let parked = sandboxd::service::standby_sandbox(&state, sb)
+            .await
+            .expect("standby");
         assert_eq!(parked.state.as_str(), "standby");
         id
     };
@@ -577,8 +750,16 @@ async fn standby_survives_control_plane_restart() {
     let view: serde_json::Value = c
         .get(format!("{base2}/v1/sandboxes/{id}"))
         .header("authorization", &auth)
-        .send().await.unwrap().json().await.unwrap();
-    assert_eq!(view["state"], "standby", "standby must survive the restart, not be failed");
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        view["state"], "standby",
+        "standby must survive the restart, not be failed"
+    );
 
     // A request to the fresh runtime auto-resumes from the persisted record, and
     // the disk state written before the restart is intact.
@@ -586,13 +767,26 @@ async fn standby_survives_control_plane_restart() {
         .post(format!("{base2}/v1/sandboxes/{id}/exec"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"cmd": "cat persist.txt"}))
-        .send().await.unwrap().json().await.unwrap();
-    assert_eq!(out["stdout"], "across-restart", "disk + standby survive a control-plane restart");
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        out["stdout"], "across-restart",
+        "disk + standby survive a control-plane restart"
+    );
 
     let view: serde_json::Value = c
         .get(format!("{base2}/v1/sandboxes/{id}"))
         .header("authorization", &auth)
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(view["state"], "running");
 }
 
@@ -608,16 +802,25 @@ async fn benchmark_sweep_covers_all_curated_images() {
         .post(format!("{base}/v1/benchmarks/run"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"image": "all", "iterations": 1}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
 
     let series = res["series"].as_array().unwrap();
     let images: std::collections::BTreeSet<&str> =
         series.iter().filter_map(|s| s["image"].as_str()).collect();
     for want in ["base", "node-python", "browser", "heavy-build"] {
-        assert!(images.contains(want), "sweep must cover {want}; got {images:?}");
+        assert!(
+            images.contains(want),
+            "sweep must cover {want}; got {images:?}"
+        );
     }
     // Each image is still reported with separated boot paths.
-    let browser_paths: std::collections::BTreeSet<&str> = series.iter()
+    let browser_paths: std::collections::BTreeSet<&str> = series
+        .iter()
         .filter(|s| s["image"] == "browser")
         .filter_map(|s| s["boot_path"].as_str())
         .collect();
@@ -638,7 +841,9 @@ async fn volumes_persist_across_sandboxes_and_attach_exclusively() {
         .post(format!("{base}/v1/volumes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"name": "data", "size_gb": 5}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 201);
     let vol: serde_json::Value = resp.json().await.unwrap();
     let vol_id = vol["id"].as_str().unwrap().to_string();
@@ -648,7 +853,9 @@ async fn volumes_persist_across_sandboxes_and_attach_exclusively() {
         .post(format!("{base}/v1/volumes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"name": "odd", "size_gb": 7}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 400);
 
     // Attach it to a sandbox and write through the mount path.
@@ -656,7 +863,9 @@ async fn volumes_persist_across_sandboxes_and_attach_exclusively() {
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"volumes": [{"volume_id": vol_id, "mount_path": "/data"}]}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 201);
     let sb: serde_json::Value = resp.json().await.unwrap();
     let id = sb["id"].as_str().unwrap().to_string();
@@ -664,7 +873,12 @@ async fn volumes_persist_across_sandboxes_and_attach_exclusively() {
         .post(format!("{base}/v1/sandboxes/{id}/exec"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"cmd": "echo persisted > data/state.txt"}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(exec["exit_code"], 0, "write into the volume: {exec}");
 
     // Exclusive: a second sandbox cannot attach the same volume while held.
@@ -672,34 +886,50 @@ async fn volumes_persist_across_sandboxes_and_attach_exclusively() {
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"volumes": [{"volume_id": vol_id, "mount_path": "/data"}]}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 409, "double-attach must conflict");
 
     // Deleting the volume while attached is refused.
     let resp = c
         .delete(format!("{base}/v1/volumes/{vol_id}"))
         .header("authorization", &auth)
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 409, "delete while attached must conflict");
 
     // Delete the sandbox; the volume detaches but its data survives.
     let resp = c
         .delete(format!("{base}/v1/sandboxes/{id}"))
         .header("authorization", &auth)
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let vol: serde_json::Value = c
         .get(format!("{base}/v1/volumes/{vol_id}"))
         .header("authorization", &auth)
-        .send().await.unwrap().json().await.unwrap();
-    assert!(vol["attached_to"].is_null(), "volume must detach on sandbox delete: {vol}");
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        vol["attached_to"].is_null(),
+        "volume must detach on sandbox delete: {vol}"
+    );
 
     // A new sandbox re-attaches the volume and reads the data back.
     let resp = c
         .post(format!("{base}/v1/sandboxes"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"volumes": [{"volume_id": vol_id, "mount_path": "/data"}]}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 201);
     let sb2: serde_json::Value = resp.json().await.unwrap();
     let id2 = sb2["id"].as_str().unwrap().to_string();
@@ -707,7 +937,12 @@ async fn volumes_persist_across_sandboxes_and_attach_exclusively() {
         .post(format!("{base}/v1/sandboxes/{id2}/exec"))
         .header("authorization", &auth)
         .json(&serde_json::json!({"cmd": "cat data/state.txt"}))
-        .send().await.unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(exec["exit_code"], 0);
     assert!(
         exec["stdout"].as_str().unwrap_or("").contains("persisted"),
@@ -718,17 +953,27 @@ async fn volumes_persist_across_sandboxes_and_attach_exclusively() {
     let resp = c
         .post(format!("{base}/v1/sandboxes/{id2}/fork"))
         .header("authorization", &auth)
-        .send().await.unwrap();
-    assert_eq!(resp.status(), 409, "fork with attached volumes must conflict");
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        409,
+        "fork with attached volumes must conflict"
+    );
 
     // Detached volume deletes cleanly.
     c.delete(format!("{base}/v1/sandboxes/{id2}"))
         .header("authorization", &auth)
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     let resp = c
         .delete(format!("{base}/v1/volumes/{vol_id}"))
         .header("authorization", &auth)
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -746,7 +991,12 @@ async fn empty_pool_create_restores_from_golden_snapshot() {
         let sb: serde_json::Value = c
             .post(format!("{base}/v1/sandboxes"))
             .header("authorization", &auth)
-            .send().await.unwrap().json().await.unwrap();
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         paths.push(sb["boot_path"].as_str().unwrap_or("?").to_string());
     }
     // The base pool target is 2: two hot claims, then the golden restore.

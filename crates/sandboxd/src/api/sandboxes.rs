@@ -117,9 +117,15 @@ pub async fn exec(
     // client that hasn't touched it in a while just sees a slightly slower exec.
     let mut sb = service::ensure_running(&state, sb).await?;
     if !sb.state.is_active() {
-        return Err(ApiError::Conflict(format!("sandbox is {}", sb.state.as_str())));
+        return Err(ApiError::Conflict(format!(
+            "sandbox is {}",
+            sb.state.as_str()
+        )));
     }
-    let handle = sb.runtime_handle.clone().ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
+    let handle = sb
+        .runtime_handle
+        .clone()
+        .ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
     // Mark activity before and after so neither the run nor a quick follow-up is
     // mistaken for idle (review #7).
     service::touch_activity(&state, &mut sb);
@@ -127,7 +133,12 @@ pub async fn exec(
         .node_for(sb.node_id.as_deref().unwrap_or(""))
         .exec(
             &handle,
-            &ExecRequest { cmd: body.cmd, cwd: body.cwd, env: body.env, background: body.background },
+            &ExecRequest {
+                cmd: body.cmd,
+                cwd: body.cwd,
+                env: body.env,
+                background: body.background,
+            },
         )
         .await
         .map_err(ApiError::Internal)?;
@@ -152,8 +163,15 @@ pub async fn read_file(
 ) -> ApiResult<Json<Value>> {
     let sb = load_owned(&state, &ctx, &id)?;
     let sb = service::ensure_running(&state, sb).await?;
-    let handle = sb.runtime_handle.clone().ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
-    let bytes = state.node_for(sb.node_id.as_deref().unwrap_or("")).read_file(&handle, &q.path).await.map_err(ApiError::Internal)?;
+    let handle = sb
+        .runtime_handle
+        .clone()
+        .ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
+    let bytes = state
+        .node_for(sb.node_id.as_deref().unwrap_or(""))
+        .read_file(&handle, &q.path)
+        .await
+        .map_err(ApiError::Internal)?;
     let body = match String::from_utf8(bytes.clone()) {
         Ok(text) => json!({ "path": q.path, "encoding": "utf8", "content": text }),
         Err(_) => json!({ "path": q.path, "encoding": "base64", "content": base64(&bytes) }),
@@ -178,14 +196,23 @@ pub async fn write_file(
 ) -> ApiResult<Json<Value>> {
     let sb = load_owned(&state, &ctx, &id)?;
     let sb = service::ensure_running(&state, sb).await?;
-    let handle = sb.runtime_handle.clone().ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
+    let handle = sb
+        .runtime_handle
+        .clone()
+        .ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
     let bytes = match body.encoding.as_deref() {
         Some("base64") => unbase64(&body.content).map_err(ApiError::BadRequest)?,
         _ => body.content.into_bytes(),
     };
     let len = bytes.len();
-    state.node_for(sb.node_id.as_deref().unwrap_or("")).write_file(&handle, &body.path, &bytes).await.map_err(ApiError::Internal)?;
-    Ok(Json(json!({ "path": body.path, "written": true, "bytes": len })))
+    state
+        .node_for(sb.node_id.as_deref().unwrap_or(""))
+        .write_file(&handle, &body.path, &bytes)
+        .await
+        .map_err(ApiError::Internal)?;
+    Ok(Json(
+        json!({ "path": body.path, "written": true, "bytes": len }),
+    ))
 }
 
 pub async fn expose_port(
@@ -195,8 +222,15 @@ pub async fn expose_port(
 ) -> ApiResult<Json<Value>> {
     let sb = load_owned(&state, &ctx, &id)?;
     let mut sb = service::ensure_running(&state, sb).await?;
-    let handle = sb.runtime_handle.clone().ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
-    state.node_for(sb.node_id.as_deref().unwrap_or("")).expose_port(&handle, port).await.map_err(ApiError::Internal)?;
+    let handle = sb
+        .runtime_handle
+        .clone()
+        .ok_or_else(|| ApiError::Conflict("no runtime handle".into()))?;
+    state
+        .node_for(sb.node_id.as_deref().unwrap_or(""))
+        .expose_port(&handle, port)
+        .await
+        .map_err(ApiError::Internal)?;
     if !sb.ports.contains(&port) {
         sb.ports.push(port);
         sb.updated_at = chrono::Utc::now();
@@ -215,7 +249,9 @@ pub async fn browser_get(
 ) -> ApiResult<Json<Value>> {
     let sb = load_owned(&state, &ctx, &id)?;
     if !sb.browser_enabled() {
-        return Err(ApiError::BadRequest("browser is not enabled on this sandbox".into()));
+        return Err(ApiError::BadRequest(
+            "browser is not enabled on this sandbox".into(),
+        ));
     }
     Ok(Json(json!({
         "enabled": true,
@@ -245,7 +281,8 @@ pub async fn browser_screenshot(
         Err(e) => return e.into_response(),
     };
     if !sb.browser_enabled() {
-        return ApiError::BadRequest("browser is not enabled on this sandbox".into()).into_response();
+        return ApiError::BadRequest("browser is not enabled on this sandbox".into())
+            .into_response();
     }
     // A parked browser sandbox transparently auto-resumes, same as exec.
     let mut sb = match service::ensure_running(&state, sb).await {
@@ -268,7 +305,15 @@ pub async fn browser_screenshot(
     let shot_abs = "/workspace/wd-screenshot.png";
     let cmd = format!("rm -f {shot_abs}; DISPLAY=:0 import -window root {shot_abs} 2>/dev/null; test -s {shot_abs}");
     if let Err(e) = node
-        .exec(&handle, &ExecRequest { cmd, cwd: None, env: Default::default(), background: false })
+        .exec(
+            &handle,
+            &ExecRequest {
+                cmd,
+                cwd: None,
+                env: Default::default(),
+                background: false,
+            },
+        )
         .await
     {
         return (StatusCode::BAD_GATEWAY, format!("capture exec failed: {e}")).into_response();
@@ -277,8 +322,16 @@ pub async fn browser_screenshot(
         Ok(png) if !png.is_empty() => {
             ([(axum::http::header::CONTENT_TYPE, "image/png")], png).into_response()
         }
-        Ok(_) => (StatusCode::BAD_GATEWAY, "screenshot was empty (is the desktop up?)").into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("screenshot read failed: {e}")).into_response(),
+        Ok(_) => (
+            StatusCode::BAD_GATEWAY,
+            "screenshot was empty (is the desktop up?)",
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("screenshot read failed: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -334,11 +387,23 @@ const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456
 fn base64(input: &[u8]) -> String {
     let mut out = String::new();
     for chunk in input.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         out.push(B64[(b[0] >> 2) as usize] as char);
         out.push(B64[(((b[0] & 0x03) << 4) | (b[1] >> 4)) as usize] as char);
-        out.push(if chunk.len() > 1 { B64[(((b[1] & 0x0f) << 2) | (b[2] >> 6)) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[(b[2] & 0x3f) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64[(((b[1] & 0x0f) << 2) | (b[2] >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(b[2] & 0x3f) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -348,7 +413,10 @@ fn unbase64(input: &str) -> Result<Vec<u8>, String> {
     for (i, &c) in B64.iter().enumerate() {
         table[c as usize] = i as u8;
     }
-    let clean: Vec<u8> = input.bytes().filter(|&b| b != b'=' && !b.is_ascii_whitespace()).collect();
+    let clean: Vec<u8> = input
+        .bytes()
+        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
+        .collect();
     let mut out = Vec::new();
     for chunk in clean.chunks(4) {
         let mut acc = 0u32;

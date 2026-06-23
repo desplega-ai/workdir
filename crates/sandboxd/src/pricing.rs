@@ -98,7 +98,12 @@ pub fn quote(cfg: &PricingConfig, r: &Resources, class: &ImageClass) -> PriceQuo
 }
 
 /// Cost charged for a metered running interval.
-pub fn interval_cost_usd(cfg: &PricingConfig, r: &Resources, class: &ImageClass, seconds: f64) -> f64 {
+pub fn interval_cost_usd(
+    cfg: &PricingConfig,
+    r: &Resources,
+    class: &ImageClass,
+    seconds: f64,
+) -> f64 {
     sandbox_price_usd_hr(cfg, r, class) * (seconds / 3600.0)
 }
 
@@ -135,7 +140,11 @@ mod tests {
     #[test]
     fn memory_is_primary_constraint() {
         // 1 vCPU / 16 GB / 8 GB -> memory dominates at 8 units.
-        let r = Resources { cpu: 1.0, memory_mb: 16384, disk_gb: 8 };
+        let r = Resources {
+            cpu: 1.0,
+            memory_mb: 16384,
+            disk_gb: 8,
+        };
         assert!((resource_units(&r) - 8.0).abs() < 1e-9);
     }
 
@@ -145,10 +154,17 @@ mod tests {
         let base = sandbox_price_usd_hr(&cfg, &Resources::default(), &ImageClass::Base);
         let browser = sandbox_price_usd_hr(
             &cfg,
-            &Resources { cpu: 2.0, memory_mb: 4096, disk_gb: 16 },
+            &Resources {
+                cpu: 2.0,
+                memory_mb: 4096,
+                disk_gb: 16,
+            },
             &ImageClass::Browser,
         );
-        assert!(base < browser, "base {base} should be cheaper than browser {browser}");
+        assert!(
+            base < browser,
+            "base {base} should be cheaper than browser {browser}"
+        );
     }
 
     #[test]

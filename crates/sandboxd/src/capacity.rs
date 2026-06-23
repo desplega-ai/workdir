@@ -29,7 +29,10 @@ pub struct CapacityTuning {
 
 impl Default for CapacityTuning {
     fn default() -> Self {
-        CapacityTuning { host_reserve_gb: DEFAULT_HOST_RESERVE_GB, practical_derate: PRACTICAL_DERATE }
+        CapacityTuning {
+            host_reserve_gb: DEFAULT_HOST_RESERVE_GB,
+            practical_derate: PRACTICAL_DERATE,
+        }
     }
 }
 

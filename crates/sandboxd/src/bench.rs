@@ -61,10 +61,18 @@ fn bench_spec(image_key: &str, resources: Resources) -> VmSpec {
 /// §10.1). `base` first so the headline number is the cheapest path.
 fn sweep_targets(image: &str) -> Vec<(String, Resources)> {
     let curated = ["base", "node-python", "browser", "heavy-build"];
-    let names: Vec<&str> = if image == "all" { curated.to_vec() } else { vec![image] };
+    let names: Vec<&str> = if image == "all" {
+        curated.to_vec()
+    } else {
+        vec![image]
+    };
     names
         .into_iter()
-        .filter_map(|name| classify(name).ok().map(|c| (name.to_string(), c.minimum_resources())))
+        .filter_map(|name| {
+            classify(name)
+                .ok()
+                .map(|c| (name.to_string(), c.minimum_resources()))
+        })
         .collect()
 }
 
@@ -72,12 +80,24 @@ async fn echo(rt: &Arc<dyn Runtime>, handle: &str) {
     let _ = rt
         .exec(
             handle,
-            &ExecRequest { cmd: "echo ok".into(), cwd: None, env: Default::default(), background: false },
+            &ExecRequest {
+                cmd: "echo ok".into(),
+                cwd: None,
+                env: Default::default(),
+                background: false,
+            },
         )
         .await;
 }
 
-fn sample(image: &str, boot_path: BootPath, ready: Instant, ready_ms: u64, echo_done: Instant, start: Instant) -> BenchmarkSample {
+fn sample(
+    image: &str,
+    boot_path: BootPath,
+    ready: Instant,
+    ready_ms: u64,
+    echo_done: Instant,
+    start: Instant,
+) -> BenchmarkSample {
     let _ = ready;
     BenchmarkSample {
         id: ids::build_id(),
@@ -90,17 +110,29 @@ fn sample(image: &str, boot_path: BootPath, ready: Instant, ready_ms: u64, echo_
 }
 
 /// Cold boot: pay the full boot (and, for custom images, the image-cache cost).
-async fn measure_cold(rt: &Arc<dyn Runtime>, image: &str, res: Resources) -> Result<BenchmarkSample> {
+async fn measure_cold(
+    rt: &Arc<dyn Runtime>,
+    image: &str,
+    res: Resources,
+) -> Result<BenchmarkSample> {
     let spec = bench_spec(image, res);
     let start = Instant::now();
     let inst = rt.create(&spec, None, false).await?;
     // Always tear the throwaway VM down, even if a later step errors.
     let out = async {
         let ready = Instant::now();
-        let ready_ms = (inst.boot_ms + inst.image_cache_ms).max(ready.duration_since(start).as_millis() as u64);
+        let ready_ms = (inst.boot_ms + inst.image_cache_ms)
+            .max(ready.duration_since(start).as_millis() as u64);
         echo(rt, &inst.handle).await;
         let echo_done = Instant::now();
-        Ok(sample(image, BootPath::ColdBoot, ready, ready_ms, echo_done, start))
+        Ok(sample(
+            image,
+            BootPath::ColdBoot,
+            ready,
+            ready_ms,
+            echo_done,
+            start,
+        ))
     }
     .await;
     let _ = rt.delete(&inst.handle).await;
@@ -109,7 +141,11 @@ async fn measure_cold(rt: &Arc<dyn Runtime>, image: &str, res: Resources) -> Res
 
 /// Hot pool: claim a pre-booted warm VM. Prewarm happens ahead of the request,
 /// so only the claim is on the measured path (the honest hot-pool number).
-async fn measure_hot(rt: &Arc<dyn Runtime>, image: &str, res: Resources) -> Result<BenchmarkSample> {
+async fn measure_hot(
+    rt: &Arc<dyn Runtime>,
+    image: &str,
+    res: Resources,
+) -> Result<BenchmarkSample> {
     let spec = bench_spec(image, res);
     let warm: WarmVm = rt.prewarm(&spec).await?;
     let start = Instant::now();
@@ -119,7 +155,14 @@ async fn measure_hot(rt: &Arc<dyn Runtime>, image: &str, res: Resources) -> Resu
         let ready_ms = ready.duration_since(start).as_millis() as u64;
         echo(rt, &inst.handle).await;
         let echo_done = Instant::now();
-        Ok(sample(image, BootPath::HotPool, ready, ready_ms, echo_done, start))
+        Ok(sample(
+            image,
+            BootPath::HotPool,
+            ready,
+            ready_ms,
+            echo_done,
+            start,
+        ))
     }
     .await;
     let _ = rt.delete(&inst.handle).await;
@@ -130,7 +173,11 @@ async fn measure_hot(rt: &Arc<dyn Runtime>, image: &str, res: Resources) -> Resu
 /// to standby (snapshot + free RAM), then time `restore`. The throwaway VM is
 /// always deleted, even if standby/restore errors (important when this runs as a
 /// canary against a live node).
-async fn measure_restore(rt: &Arc<dyn Runtime>, image: &str, res: Resources) -> Result<BenchmarkSample> {
+async fn measure_restore(
+    rt: &Arc<dyn Runtime>,
+    image: &str,
+    res: Resources,
+) -> Result<BenchmarkSample> {
     let spec = bench_spec(image, res);
     let inst = rt.create(&spec, None, false).await?;
     let out = async {
@@ -141,7 +188,14 @@ async fn measure_restore(rt: &Arc<dyn Runtime>, image: &str, res: Resources) -> 
         let ready_ms = restore_ms.max(ready.duration_since(start).as_millis() as u64);
         echo(rt, &inst.handle).await;
         let echo_done = Instant::now();
-        Ok(sample(image, BootPath::SnapshotRestore, ready, ready_ms, echo_done, start))
+        Ok(sample(
+            image,
+            BootPath::SnapshotRestore,
+            ready,
+            ready_ms,
+            echo_done,
+            start,
+        ))
     }
     .await;
     let _ = rt.delete(&inst.handle).await;

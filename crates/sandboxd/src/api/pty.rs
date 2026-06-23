@@ -32,11 +32,16 @@ pub async fn pty_ws(
         None => return ApiError::Conflict("no runtime handle".into()).into_response(),
     };
     if sb.node_id.as_deref() != Some(state.local_node_id.as_str()) {
-        return ApiError::BadRequest("PTY is only available for sandboxes on the local node".into())
-            .into_response();
+        return ApiError::BadRequest(
+            "PTY is only available for sandboxes on the local node".into(),
+        )
+        .into_response();
     }
     // An interactive PTY session counts as activity (review #6).
-    state.store.touch_last_active(&sb.id, chrono::Utc::now()).ok();
+    state
+        .store
+        .touch_last_active(&sb.id, chrono::Utc::now())
+        .ok();
     ws.on_upgrade(move |socket| run_pty(state, handle, socket))
 }
 
@@ -48,7 +53,12 @@ async fn run_pty(state: AppState, handle: String, socket: WebSocket) {
             return;
         }
     };
-    let PtySession { mut input, output, stderr, mut child } = session;
+    let PtySession {
+        mut input,
+        output,
+        stderr,
+        mut child,
+    } = session;
     let (mut cl_tx, mut cl_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(128);
 

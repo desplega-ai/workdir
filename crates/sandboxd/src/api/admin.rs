@@ -7,8 +7,8 @@
 use crate::auth::AuthContext;
 use crate::error::{ApiError, ApiResult};
 use crate::lifecycle::State as LfState;
-use crate::usage::{ApiKey, Org, OrgStatus};
 use crate::state::AppState;
+use crate::usage::{ApiKey, Org, OrgStatus};
 use crate::{secrets, service, views};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -70,7 +70,10 @@ pub async fn create_org(
         },
     };
     state.store.put_org(&org).map_err(ApiError::Internal)?;
-    Ok((StatusCode::OK, Json(json!({ "org_id": org.id, "status": org.status }))))
+    Ok((
+        StatusCode::OK,
+        Json(json!({ "org_id": org.id, "status": org.status })),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -89,11 +92,21 @@ pub async fn register_key(
     Json(req): Json<RegisterKeyReq>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     require_admin(&ctx)?;
-    if state.store.get_org(&req.org_id).map_err(ApiError::Internal)?.is_none() {
-        return Err(ApiError::BadRequest(format!("org '{}' does not exist", req.org_id)));
+    if state
+        .store
+        .get_org(&req.org_id)
+        .map_err(ApiError::Internal)?
+        .is_none()
+    {
+        return Err(ApiError::BadRequest(format!(
+            "org '{}' does not exist",
+            req.org_id
+        )));
     }
     if req.key_hash.len() != 64 || !req.key_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(ApiError::BadRequest("key_hash must be a SHA-256 hex digest".into()));
+        return Err(ApiError::BadRequest(
+            "key_hash must be a SHA-256 hex digest".into(),
+        ));
     }
     let key = ApiKey {
         key_hash: req.key_hash.clone(),
@@ -152,7 +165,12 @@ pub async fn org_secret_put(
     Json(body): Json<crate::api::secrets::PutSecretBody>,
 ) -> ApiResult<Json<Value>> {
     require_admin(&ctx)?;
-    if state.store.get_org(&org).map_err(ApiError::Internal)?.is_none() {
+    if state
+        .store
+        .get_org(&org)
+        .map_err(ApiError::Internal)?
+        .is_none()
+    {
         return Err(ApiError::NotFound(format!("org {org}")));
     }
     if !secrets::valid_name(&name) {
@@ -161,9 +179,12 @@ pub async fn org_secret_put(
         ));
     }
     if body.value.len() > 64 * 1024 {
-        return Err(ApiError::BadRequest("secret value too large (max 64 KiB)".into()));
+        return Err(ApiError::BadRequest(
+            "secret value too large (max 64 KiB)".into(),
+        ));
     }
-    let rec = secrets::encrypt(&state.secret_key, &org, &name, &body.value).map_err(ApiError::Internal)?;
+    let rec = secrets::encrypt(&state.secret_key, &org, &name, &body.value)
+        .map_err(ApiError::Internal)?;
     state.store.put_secret(&rec).map_err(ApiError::Internal)?;
     Ok(Json(json!({ "name": name, "stored": true })))
 }
@@ -174,7 +195,10 @@ pub async fn org_secret_delete(
     Path((org, name)): Path<(String, String)>,
 ) -> ApiResult<Json<Value>> {
     require_admin(&ctx)?;
-    let removed = state.store.delete_secret(&org, &name).map_err(ApiError::Internal)?;
+    let removed = state
+        .store
+        .delete_secret(&org, &name)
+        .map_err(ApiError::Internal)?;
     if !removed {
         return Err(ApiError::NotFound(format!("secret {name}")));
     }
@@ -188,10 +212,16 @@ pub async fn org_sandboxes(
     Path(org): Path<String>,
 ) -> ApiResult<Json<Value>> {
     require_admin(&ctx)?;
-    let mut sbs = state.store.list_sandboxes_for_org(&org).map_err(ApiError::Internal)?;
+    let mut sbs = state
+        .store
+        .list_sandboxes_for_org(&org)
+        .map_err(ApiError::Internal)?;
     sbs.retain(|s| s.state != LfState::Deleted);
     sbs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    let views: Vec<Value> = sbs.iter().map(|sb| views::sandbox_view(&state, sb)).collect();
+    let views: Vec<Value> = sbs
+        .iter()
+        .map(|sb| views::sandbox_view(&state, sb))
+        .collect();
     Ok(Json(json!({ "sandboxes": views })))
 }
 
@@ -235,13 +265,22 @@ pub async fn org_suspend(
 ) -> ApiResult<Json<Value>> {
     require_admin(&ctx)?;
     if org == state.cfg.auth.bootstrap_org {
-        return Err(ApiError::BadRequest("refusing to suspend the bootstrap admin org".into()));
+        return Err(ApiError::BadRequest(
+            "refusing to suspend the bootstrap admin org".into(),
+        ));
     }
-    let mut o = state.store.get_org(&org).map_err(ApiError::Internal)?.ok_or_else(|| ApiError::NotFound(format!("org {org}")))?;
+    let mut o = state
+        .store
+        .get_org(&org)
+        .map_err(ApiError::Internal)?
+        .ok_or_else(|| ApiError::NotFound(format!("org {org}")))?;
     o.status = OrgStatus::Suspended;
     state.store.put_org(&o).map_err(ApiError::Internal)?;
     // Stop everything the org has running right now.
-    let sbs = state.store.list_sandboxes_for_org(&org).map_err(ApiError::Internal)?;
+    let sbs = state
+        .store
+        .list_sandboxes_for_org(&org)
+        .map_err(ApiError::Internal)?;
     let mut stopped = 0;
     for sb in sbs.into_iter().filter(|s| s.state == LfState::Running) {
         if service::stop_sandbox(&state, sb).await.is_ok() {
@@ -249,7 +288,9 @@ pub async fn org_suspend(
         }
     }
     tracing::warn!(org = %org, stopped, "org suspended (kill switch)");
-    Ok(Json(json!({ "org": org, "status": "suspended", "stopped": stopped })))
+    Ok(Json(
+        json!({ "org": org, "status": "suspended", "stopped": stopped }),
+    ))
 }
 
 pub async fn org_unsuspend(
@@ -258,7 +299,11 @@ pub async fn org_unsuspend(
     Path(org): Path<String>,
 ) -> ApiResult<Json<Value>> {
     require_admin(&ctx)?;
-    let mut o = state.store.get_org(&org).map_err(ApiError::Internal)?.ok_or_else(|| ApiError::NotFound(format!("org {org}")))?;
+    let mut o = state
+        .store
+        .get_org(&org)
+        .map_err(ApiError::Internal)?
+        .ok_or_else(|| ApiError::NotFound(format!("org {org}")))?;
     o.status = OrgStatus::Active;
     state.store.put_org(&o).map_err(ApiError::Internal)?;
     Ok(Json(json!({ "org": org, "status": "active" })))
@@ -271,7 +316,10 @@ pub async fn org_images(
     Path(org): Path<String>,
 ) -> ApiResult<Json<Value>> {
     require_admin(&ctx)?;
-    let imgs = state.store.list_images_for_org(&org).map_err(ApiError::Internal)?;
+    let imgs = state
+        .store
+        .list_images_for_org(&org)
+        .map_err(ApiError::Internal)?;
     let views: Vec<Value> = imgs.iter().map(crate::api::images::image_view).collect();
     Ok(Json(json!({ "images": views })))
 }
@@ -307,8 +355,14 @@ pub async fn metrics(
     let host = crate::host::collect(&state.cfg.server.data_dir).await;
 
     // Local node capacity.
-    let node = state.store.get_node(&state.local_node_id).map_err(ApiError::Internal)?;
-    let active = state.store.all_active_sandboxes().map_err(ApiError::Internal)?;
+    let node = state
+        .store
+        .get_node(&state.local_node_id)
+        .map_err(ApiError::Internal)?;
+    let active = state
+        .store
+        .all_active_sandboxes()
+        .map_err(ApiError::Internal)?;
 
     let mut by_state: std::collections::BTreeMap<String, u64> = Default::default();
     let mut by_image: std::collections::BTreeMap<String, u64> = Default::default();
@@ -321,7 +375,10 @@ pub async fn metrics(
         committed_memory_mb += sb.resources.memory_mb as u64;
         *by_state.entry(sb.state.as_str().to_string()).or_default() += 1;
         *by_image.entry(sb.image.clone()).or_default() += 1;
-        let net = sb.runtime_handle.as_ref().and_then(|h| state.local.runtime().vm_net_stats(h));
+        let net = sb
+            .runtime_handle
+            .as_ref()
+            .and_then(|h| state.local.runtime().vm_net_stats(h));
         sandboxes.push(json!({
             "id": sb.id,
             "org_id": sb.org_id,
@@ -383,10 +440,19 @@ pub async fn org_usage(
 ) -> ApiResult<Json<Value>> {
     require_admin(&ctx)?;
     let now = Utc::now();
-    let intervals = state.store.usage_for_org(&org).map_err(ApiError::Internal)?;
+    let intervals = state
+        .store
+        .usage_for_org(&org)
+        .map_err(ApiError::Internal)?;
     let total_cost: f64 = intervals.iter().map(|iv| iv.cost_usd(now)).sum();
-    let delivered: f64 = intervals.iter().map(|iv| iv.delivered_unit_seconds(now)).sum();
-    let sandboxes = state.store.list_sandboxes_for_org(&org).map_err(ApiError::Internal)?;
+    let delivered: f64 = intervals
+        .iter()
+        .map(|iv| iv.delivered_unit_seconds(now))
+        .sum();
+    let sandboxes = state
+        .store
+        .list_sandboxes_for_org(&org)
+        .map_err(ApiError::Internal)?;
     let active = sandboxes.iter().filter(|s| s.state.is_active()).count();
     let org_rec = state.store.get_org(&org).map_err(ApiError::Internal)?;
     Ok(Json(json!({

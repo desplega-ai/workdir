@@ -103,7 +103,9 @@ impl MockRuntime {
     fn persist(&self, handle: &str) {
         let json = {
             let state = self.state.lock().unwrap();
-            state.get(handle).and_then(|s| serde_json::to_string(s).ok())
+            state
+                .get(handle)
+                .and_then(|s| serde_json::to_string(s).ok())
         };
         if let Some(json) = json {
             let _ = std::fs::write(self.state_path(handle), json);
@@ -140,7 +142,11 @@ impl Runtime for MockRuntime {
         "mock"
     }
 
-    fn golden_snapshot_available(&self, image_key: &str, resources: &crate::knobs::Resources) -> bool {
+    fn golden_snapshot_available(
+        &self,
+        image_key: &str,
+        resources: &crate::knobs::Resources,
+    ) -> bool {
         self.golden_marker(image_key, resources.memory_mb).exists()
     }
 
@@ -165,7 +171,11 @@ impl Runtime for MockRuntime {
             .lock()
             .unwrap()
             .insert(handle.clone(), VmState::default());
-        Ok(WarmVm { handle, image_key: spec.image_key.clone(), resources: spec.resources })
+        Ok(WarmVm {
+            handle,
+            image_key: spec.image_key.clone(),
+            resources: spec.resources,
+        })
     }
 
     async fn create(
@@ -177,19 +187,34 @@ impl Runtime for MockRuntime {
         let (handle, boot_path, boot_ms, image_cache_ms) = match warm {
             Some(w) => {
                 // Hot pool: the warm VM becomes the sandbox. Just attach.
-                (w.handle, BootPath::HotPool, 35 + Self::jitter(&spec.sandbox_id, 15), 0)
+                (
+                    w.handle,
+                    BootPath::HotPool,
+                    35 + Self::jitter(&spec.sandbox_id, 15),
+                    0,
+                )
             }
             None if snapshot_available => {
                 let h = format!("vm_{}", spec.sandbox_id);
                 self.workspaces.create(&h)?;
-                (h, BootPath::SnapshotRestore, 200 + Self::jitter(&spec.sandbox_id, 60), 0)
+                (
+                    h,
+                    BootPath::SnapshotRestore,
+                    200 + Self::jitter(&spec.sandbox_id, 60),
+                    0,
+                )
             }
             None => {
                 let h = format!("vm_{}", spec.sandbox_id);
                 self.workspaces.create(&h)?;
                 // Cold boot also pays an image cache cost for custom images.
                 let cache = if spec.image_key == "custom" { 400 } else { 60 };
-                (h, BootPath::ColdBoot, 1500 + Self::jitter(&spec.sandbox_id, 400), cache)
+                (
+                    h,
+                    BootPath::ColdBoot,
+                    1500 + Self::jitter(&spec.sandbox_id, 400),
+                    cache,
+                )
             }
         };
 
@@ -215,20 +240,38 @@ impl Runtime for MockRuntime {
         }
         for m in &spec.mounts {
             // Simulate the mount by creating its directory under the workspace.
-            let _ = self.write_file(&handle, &format!("{}/.s3-mount-{}", m.mount_path, m.bucket), b"mounted (dev simulation)").await;
+            let _ = self
+                .write_file(
+                    &handle,
+                    &format!("{}/.s3-mount-{}", m.mount_path, m.bucket),
+                    b"mounted (dev simulation)",
+                )
+                .await;
         }
         // Persistent volumes: a failed attach fails the boot — silently booting
         // without the volume would let writes land in the ephemeral workspace.
         for v in &spec.volumes {
             self.attach_volume(&handle, v)?;
         }
-        self.state
-            .lock()
-            .unwrap()
-            .insert(handle.clone(), VmState { paused: false, standby: false, ballooned_mib: 0, resident_env });
+        self.state.lock().unwrap().insert(
+            handle.clone(),
+            VmState {
+                paused: false,
+                standby: false,
+                ballooned_mib: 0,
+                resident_env,
+            },
+        );
         self.persist(&handle);
 
-        Ok(VmInstance { handle, boot_path, boot_ms, image_cache_ms, browser_ready_ms, agent_ms: 0 })
+        Ok(VmInstance {
+            handle,
+            boot_path,
+            boot_ms,
+            image_cache_ms,
+            browser_ready_ms,
+            agent_ms: 0,
+        })
     }
 
     async fn exec(&self, handle: &str, req: &ExecRequest) -> Result<ExecResult> {
@@ -388,7 +431,9 @@ impl Runtime for MockRuntime {
         self.ensure_loaded(handle);
         {
             let mut state = self.state.lock().unwrap();
-            let s = state.get_mut(handle).context("restore: unknown vm (no persisted record)")?;
+            let s = state
+                .get_mut(handle)
+                .context("restore: unknown vm (no persisted record)")?;
             s.standby = false;
             s.paused = false;
         }
@@ -402,7 +447,10 @@ impl Runtime for MockRuntime {
         // Approximate stored size from the workspace footprint.
         let dir = self.workspaces.dir_for(handle);
         let bytes = dir_size(&dir);
-        Ok(SnapshotArtifact { handle: ids::snapshot_id(), storage_bytes: bytes })
+        Ok(SnapshotArtifact {
+            handle: ids::snapshot_id(),
+            storage_bytes: bytes,
+        })
     }
 
     async fn fork(&self, parent_handle: &str, child_spec: &VmSpec) -> Result<VmInstance> {
@@ -417,10 +465,15 @@ impl Runtime for MockRuntime {
 
         let mut resident_env = child_spec.env.clone();
         resident_env.extend(child_spec.secret_env.clone());
-        self.state
-            .lock()
-            .unwrap()
-            .insert(child.clone(), VmState { paused: false, standby: false, ballooned_mib: 0, resident_env });
+        self.state.lock().unwrap().insert(
+            child.clone(),
+            VmState {
+                paused: false,
+                standby: false,
+                ballooned_mib: 0,
+                resident_env,
+            },
+        );
         self.persist(&child);
         for (path, bytes) in &child_spec.files {
             let _ = self.write_file(&child, path, bytes).await;

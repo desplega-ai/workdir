@@ -87,7 +87,11 @@ impl IntoResponse for ApiError {
             other => other.to_string(),
         };
         let body = ErrorBody {
-            error: ErrorInner { code: self.code(), message, reason },
+            error: ErrorInner {
+                code: self.code(),
+                message,
+                reason,
+            },
         };
         (self.status(), Json(body)).into_response()
     }

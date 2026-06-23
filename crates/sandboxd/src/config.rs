@@ -241,7 +241,11 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         // Default to mock so a fresh checkout runs anywhere; the installer flips
         // this to "firecracker" on a real KVM-capable Hetzner node.
-        let default_kind = if cfg!(target_os = "linux") { "firecracker" } else { "mock" };
+        let default_kind = if cfg!(target_os = "linux") {
+            "firecracker"
+        } else {
+            "mock"
+        };
         RuntimeConfig {
             kind: default_kind.to_string(),
             firecracker_bin: "/usr/local/bin/firecracker".to_string(),
@@ -271,16 +275,22 @@ fn default_jailer_uid() -> u32 {
 
 impl Default for HotPoolConfig {
     fn default() -> Self {
-        HotPoolConfig { enabled: true, warm_interval_seconds: 5, base_target: 2 }
+        HotPoolConfig {
+            enabled: true,
+            warm_interval_seconds: 5,
+            base_target: 2,
+        }
     }
 }
 
 impl Default for AuthConfig {
     fn default() -> Self {
-        AuthConfig { bootstrap_admin_key: String::new(), bootstrap_org: "org_admin".to_string() }
+        AuthConfig {
+            bootstrap_admin_key: String::new(),
+            bootstrap_org: "org_admin".to_string(),
+        }
     }
 }
-
 
 impl Config {
     /// Load from a TOML path if it exists, else defaults. Then apply a few

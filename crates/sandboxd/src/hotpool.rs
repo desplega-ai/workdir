@@ -82,7 +82,11 @@ impl HotPools {
     /// admin dashboard.
     pub fn status(&self) -> Vec<PoolStatus> {
         let mut keys: Vec<&ShapeKey> = self.targets.keys().collect();
-        keys.sort_by(|a, b| a.image_key.cmp(&b.image_key).then(a.memory_mb.cmp(&b.memory_mb)));
+        keys.sort_by(|a, b| {
+            a.image_key
+                .cmp(&b.image_key)
+                .then(a.memory_mb.cmp(&b.memory_mb))
+        });
         keys.into_iter()
             .map(|k| {
                 let ready = self.available(k);

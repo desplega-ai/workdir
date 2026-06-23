@@ -114,7 +114,9 @@ pub fn spawn_balloon_reaper(state: AppState) {
                             tracing::info!(sandbox = %sb.id, target_mib = target, idle_s = idle, "soft standby: balloon inflated");
                             ballooned.insert(sb.id.clone());
                         }
-                        Err(e) => tracing::debug!(error = %e, sandbox = %sb.id, "balloon inflate failed"),
+                        Err(e) => {
+                            tracing::debug!(error = %e, sandbox = %sb.id, "balloon inflate failed")
+                        }
                     }
                 } else if idle < idle_s as i64 && ballooned.contains(&sb.id) {
                     match node.balloon(&handle, 0).await {
@@ -122,7 +124,9 @@ pub fn spawn_balloon_reaper(state: AppState) {
                             tracing::info!(sandbox = %sb.id, "activity returned: balloon deflated");
                             ballooned.remove(&sb.id);
                         }
-                        Err(e) => tracing::debug!(error = %e, sandbox = %sb.id, "balloon deflate failed"),
+                        Err(e) => {
+                            tracing::debug!(error = %e, sandbox = %sb.id, "balloon deflate failed")
+                        }
                     }
                 }
             }
@@ -146,7 +150,9 @@ pub fn spawn_pressure_reaper(state: AppState) {
         }
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            let Some(avg10) = crate::capacity::memory_pressure_avg10() else { continue };
+            let Some(avg10) = crate::capacity::memory_pressure_avg10() else {
+                continue;
+            };
             if avg10 < threshold {
                 continue;
             }
@@ -156,7 +162,9 @@ pub fn spawn_pressure_reaper(state: AppState) {
             };
             // One victim per tick: standby itself relieves pressure, so let the
             // next reading decide whether more shedding is needed.
-            let Some(victim) = pick_pressure_victim(&active) else { continue };
+            let Some(victim) = pick_pressure_victim(&active) else {
+                continue;
+            };
             tracing::warn!(
                 avg10,
                 threshold,
@@ -210,7 +218,10 @@ pub fn spawn_credit_enforcer(state: AppState) {
                     continue;
                 }
                 tracing::warn!(org = %org_id, "org out of credit — stopping its sandboxes");
-                for sb in active.iter().filter(|s| s.org_id == org_id && s.state == State::Running) {
+                for sb in active
+                    .iter()
+                    .filter(|s| s.org_id == org_id && s.state == State::Running)
+                {
                     if let Err(e) = service::stop_sandbox(&state, sb.clone()).await {
                         tracing::warn!(error = %e, sandbox = %sb.id, "credit-stop failed");
                     }
@@ -241,7 +252,9 @@ pub fn spawn_image_gc(state: AppState) {
                     continue;
                 }
                 let reference = img.reference();
-                let referenced = active.iter().any(|s| s.image == reference || s.image == img.name);
+                let referenced = active
+                    .iter()
+                    .any(|s| s.image == reference || s.image == img.name);
                 if referenced {
                     continue;
                 }

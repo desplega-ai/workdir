@@ -37,7 +37,11 @@ pub struct Resources {
 
 impl Default for Resources {
     fn default() -> Self {
-        Resources { cpu: DEFAULT_CPU, memory_mb: DEFAULT_MEMORY_MB, disk_gb: DEFAULT_DISK_GB }
+        Resources {
+            cpu: DEFAULT_CPU,
+            memory_mb: DEFAULT_MEMORY_MB,
+            disk_gb: DEFAULT_DISK_GB,
+        }
     }
 }
 
@@ -78,7 +82,11 @@ impl Resources {
                 ALLOWED_DISK_GB
             ));
         }
-        Ok(Resources { cpu, memory_mb, disk_gb })
+        Ok(Resources {
+            cpu,
+            memory_mb,
+            disk_gb,
+        })
     }
 
     pub fn memory_gb(&self) -> f64 {
@@ -121,19 +129,28 @@ mod tests {
 
     #[test]
     fn rejects_arbitrary_memory() {
-        let req = ResourcesRequest { memory_mb: Some(13 * 1024), ..Default::default() };
+        let req = ResourcesRequest {
+            memory_mb: Some(13 * 1024),
+            ..Default::default()
+        };
         assert!(Resources::validate(&req).is_err());
     }
 
     #[test]
     fn rejects_arbitrary_disk() {
-        let req = ResourcesRequest { disk_gb: Some(250), ..Default::default() };
+        let req = ResourcesRequest {
+            disk_gb: Some(250),
+            ..Default::default()
+        };
         assert!(Resources::validate(&req).is_err());
     }
 
     #[test]
     fn accepts_half_cpu() {
-        let req = ResourcesRequest { cpu: Some(0.5), ..Default::default() };
+        let req = ResourcesRequest {
+            cpu: Some(0.5),
+            ..Default::default()
+        };
         assert!(Resources::validate(&req).is_ok());
     }
 

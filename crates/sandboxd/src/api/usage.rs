@@ -17,14 +17,25 @@ pub async fn usage(
     Extension(ctx): Extension<AuthContext>,
 ) -> ApiResult<Json<Value>> {
     let now = Utc::now();
-    let intervals = state.store.usage_for_org(&ctx.org_id).map_err(ApiError::Internal)?;
+    let intervals = state
+        .store
+        .usage_for_org(&ctx.org_id)
+        .map_err(ApiError::Internal)?;
     let total_cost: f64 = intervals.iter().map(|iv| iv.cost_usd(now)).sum();
-    let delivered_unit_seconds: f64 = intervals.iter().map(|iv| iv.delivered_unit_seconds(now)).sum();
-    let org = state.store.get_org(&ctx.org_id).map_err(ApiError::Internal)?;
+    let delivered_unit_seconds: f64 = intervals
+        .iter()
+        .map(|iv| iv.delivered_unit_seconds(now))
+        .sum();
+    let org = state
+        .store
+        .get_org(&ctx.org_id)
+        .map_err(ApiError::Internal)?;
 
     let mut per_sandbox = std::collections::BTreeMap::<String, (f64, f64)>::new();
     for iv in &intervals {
-        let e = per_sandbox.entry(iv.sandbox_id.clone()).or_insert((0.0, 0.0));
+        let e = per_sandbox
+            .entry(iv.sandbox_id.clone())
+            .or_insert((0.0, 0.0));
         e.0 += iv.seconds(now);
         e.1 += iv.cost_usd(now);
     }
@@ -54,7 +65,10 @@ pub async fn admin_overview(
     let now = Utc::now();
     let nodes = state.store.list_nodes().map_err(ApiError::Internal)?;
     let all_usage = state.store.all_usage().map_err(ApiError::Internal)?;
-    let active = state.store.all_active_sandboxes().map_err(ApiError::Internal)?;
+    let active = state
+        .store
+        .all_active_sandboxes()
+        .map_err(ApiError::Internal)?;
 
     // Reconcile a MONTH of node cost against a MONTH of delivered units (review
     // #11): clip each interval to the current calendar month so the published
@@ -81,7 +95,8 @@ pub async fn admin_overview(
         delivered_unit_hours.max(1e-6),
     );
 
-    let base_price = pricing::sandbox_price_usd_hr(&state.cfg.pricing, &Resources::default(), &ImageClass::Base);
+    let base_price =
+        pricing::sandbox_price_usd_hr(&state.cfg.pricing, &Resources::default(), &ImageClass::Base);
 
     Ok(Json(json!({
         "nodes": nodes.len(),
@@ -107,22 +122,44 @@ pub async fn benchmarks(
     // Phase 0 latency table: p50/p90/p95 per (image, boot_path) from the harness
     // (spec §21.3). The boot paths are reported separately and never merged, so
     // best-case hot-pool numbers are never published unlabeled.
-    let harness = state.store.all_benchmark_samples().map_err(ApiError::Internal)?;
-    let series = aggregate(harness.iter().map(|s| (s.image.clone(), s.boot_path.as_str().to_string(), s.ready_ms, s.create_to_echo_ms)));
+    let harness = state
+        .store
+        .all_benchmark_samples()
+        .map_err(ApiError::Internal)?;
+    let series = aggregate(harness.iter().map(|s| {
+        (
+            s.image.clone(),
+            s.boot_path.as_str().to_string(),
+            s.ready_ms,
+            s.create_to_echo_ms,
+        )
+    }));
 
     // Secondary series: timings observed from real sandboxes, scoped to the
     // caller's org (admins see the whole fleet) so cross-org timings don't leak.
     let sandboxes = if ctx.admin {
-        state.store.all_active_sandboxes().map_err(ApiError::Internal)?
+        state
+            .store
+            .all_active_sandboxes()
+            .map_err(ApiError::Internal)?
     } else {
-        state.store.list_sandboxes_for_org(&ctx.org_id).map_err(ApiError::Internal)?
+        state
+            .store
+            .list_sandboxes_for_org(&ctx.org_id)
+            .map_err(ApiError::Internal)?
     };
     let observed = aggregate(sandboxes.iter().map(|s| {
         let total = (s.timings.boot_ms + s.timings.image_cache_ms).max(1);
-        (s.image.clone(), s.boot_path.as_str().to_string(), total, total)
+        (
+            s.image.clone(),
+            s.boot_path.as_str().to_string(),
+            total,
+            total,
+        )
     }));
 
-    let base_price = pricing::sandbox_price_usd_hr(&state.cfg.pricing, &Resources::default(), &ImageClass::Base);
+    let base_price =
+        pricing::sandbox_price_usd_hr(&state.cfg.pricing, &Resources::default(), &ImageClass::Base);
     let nodes = state.store.list_nodes().map_err(ApiError::Internal)?;
     Ok(Json(json!({
         "series": series,
@@ -149,10 +186,25 @@ pub async fn run_benchmarks(
     let body = body.map(|Json(b)| b).unwrap_or(Value::Null);
     // Default to a full baseline across every curated image; pass a single
     // curated name to sweep just one.
-    let image = body.get("image").and_then(|v| v.as_str()).unwrap_or("all").to_string();
-    let iterations = body.get("iterations").and_then(|v| v.as_u64()).unwrap_or(5).clamp(1, 50) as u32;
+    let image = body
+        .get("image")
+        .and_then(|v| v.as_str())
+        .unwrap_or("all")
+        .to_string();
+    let iterations = body
+        .get("iterations")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5)
+        .clamp(1, 50) as u32;
     let fresh = crate::bench::run_sweep(&state, &image, iterations).await;
-    let series = aggregate(fresh.iter().map(|s| (s.image.clone(), s.boot_path.as_str().to_string(), s.ready_ms, s.create_to_echo_ms)));
+    let series = aggregate(fresh.iter().map(|s| {
+        (
+            s.image.clone(),
+            s.boot_path.as_str().to_string(),
+            s.ready_ms,
+            s.create_to_echo_ms,
+        )
+    }));
     Ok(Json(json!({
         "ran": fresh.len(),
         "image": image,
@@ -168,13 +220,18 @@ fn aggregate(rows: impl Iterator<Item = (String, String, u64, u64)>) -> Vec<Valu
     let mut ready: std::collections::BTreeMap<(String, String), Vec<u64>> = Default::default();
     let mut echo: std::collections::BTreeMap<(String, String), Vec<u64>> = Default::default();
     for (image, path, r, e) in rows {
-        ready.entry((image.clone(), path.clone())).or_default().push(r.max(1));
+        ready
+            .entry((image.clone(), path.clone()))
+            .or_default()
+            .push(r.max(1));
         echo.entry((image, path)).or_default().push(e.max(1));
     }
     let mut out = vec![];
     for ((image, boot_path), mut vals) in ready {
         vals.sort_unstable();
-        let mut evals = echo.remove(&(image.clone(), boot_path.clone())).unwrap_or_default();
+        let mut evals = echo
+            .remove(&(image.clone(), boot_path.clone()))
+            .unwrap_or_default();
         evals.sort_unstable();
         out.push(json!({
             "image": image,

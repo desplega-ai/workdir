@@ -27,20 +27,28 @@ pub struct HostMetrics {
 
 pub async fn collect(data_dir: &Path) -> HostMetrics {
     let mut m = HostMetrics {
-        cpu_count: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        cpu_count: std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0),
         hostname: read_line("/proc/sys/kernel/hostname").unwrap_or_else(|| "unknown".into()),
         firecracker_procs: count_procs("firecracker"),
         ..Default::default()
     };
 
-    if let Some(up) = read_line("/proc/uptime")
-        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()))
-    {
+    if let Some(up) = read_line("/proc/uptime").and_then(|s| {
+        s.split_whitespace()
+            .next()
+            .and_then(|v| v.parse::<f64>().ok())
+    }) {
         m.uptime_seconds = up as u64;
     }
 
     if let Some(s) = read_line("/proc/loadavg") {
-        let p: Vec<f64> = s.split_whitespace().take(3).filter_map(|v| v.parse().ok()).collect();
+        let p: Vec<f64> = s
+            .split_whitespace()
+            .take(3)
+            .filter_map(|v| v.parse().ok())
+            .collect();
         if p.len() == 3 {
             m.load1 = p[0];
             m.load5 = p[1];
@@ -76,7 +84,9 @@ pub async fn collect(data_dir: &Path) -> HostMetrics {
 }
 
 fn read_line(path: &str) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.lines().next().unwrap_or("").trim().to_string())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.lines().next().unwrap_or("").trim().to_string())
 }
 
 /// Count running processes whose comm matches `name` (Linux /proc scan).
@@ -103,7 +113,11 @@ async fn cpu_percent() -> f64 {
     fn sample() -> Option<(u64, u64)> {
         let s = std::fs::read_to_string("/proc/stat").ok()?;
         let line = s.lines().next()?; // "cpu  user nice system idle iowait irq softirq steal..."
-        let vals: Vec<u64> = line.split_whitespace().skip(1).filter_map(|v| v.parse().ok()).collect();
+        let vals: Vec<u64> = line
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|v| v.parse().ok())
+            .collect();
         if vals.len() < 4 {
             return None;
         }
@@ -126,7 +140,12 @@ async fn cpu_percent() -> f64 {
 
 /// (total_bytes, free_bytes) for the filesystem holding `dir`, via `df`.
 async fn df_bytes(dir: &Path) -> Option<(u64, u64)> {
-    let out = tokio::process::Command::new("df").arg("-kP").arg(dir).output().await.ok()?;
+    let out = tokio::process::Command::new("df")
+        .arg("-kP")
+        .arg(dir)
+        .output()
+        .await
+        .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let cols: Vec<&str> = text.lines().nth(1)?.split_whitespace().collect();
     // Filesystem 1024-blocks Used Available Capacity Mounted-on

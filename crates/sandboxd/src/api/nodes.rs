@@ -24,7 +24,10 @@ pub async fn list(
     let mut cluster_used_units = 0.0;
     for node in &nodes {
         let cap = node.capacity();
-        let active = state.store.active_sandboxes_on_node(&node.id).map_err(ApiError::Internal)?;
+        let active = state
+            .store
+            .active_sandboxes_on_node(&node.id)
+            .map_err(ApiError::Internal)?;
         let used_units = units_for_memory_gb(active_memory_gb(&active));
         let free_units = (cap.practical_units as f64 - used_units).max(0.0);
         cluster_total_units += cap.practical_units as f64;
@@ -86,7 +89,10 @@ pub async fn join_token(
     }
     // Rotate to a fresh token (spec §18: rotatable control-plane secret).
     let token = ids::join_token();
-    state.store.set_meta(JOIN_TOKEN_KEY, &token).map_err(ApiError::Internal)?;
+    state
+        .store
+        .set_meta(JOIN_TOKEN_KEY, &token)
+        .map_err(ApiError::Internal)?;
     Ok(Json(json!({
         "join_token": token,
         "control_plane_url": format!("https://api.{}", state.cfg.server.public_domain),
@@ -113,7 +119,10 @@ pub async fn drain(
     node.draining = true;
     node.last_heartbeat_at = Utc::now();
     state.store.put_node(&node).map_err(ApiError::Internal)?;
-    let remaining = state.store.active_sandboxes_on_node(&id).map_err(ApiError::Internal)?;
+    let remaining = state
+        .store
+        .active_sandboxes_on_node(&id)
+        .map_err(ApiError::Internal)?;
     Ok(Json(json!({
         "id": id,
         "draining": true,

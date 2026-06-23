@@ -14,7 +14,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "workdir", version, about = "Low-cost Firecracker microVM sandbox provider")]
+#[command(
+    name = "workdir",
+    version,
+    about = "Low-cost Firecracker microVM sandbox provider"
+)]
 struct Cli {
     /// Path to config.toml.
     #[arg(long, env = "WORKDIR_CONFIG")]
@@ -50,13 +54,16 @@ pub fn run() -> Result<()> {
 
     let cfg = Config::load(cli.config.as_deref())?;
     init_tracing();
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(serve(cfg))
 }
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sandboxd=info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sandboxd=info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
@@ -74,7 +81,9 @@ async fn serve(cfg: Config) -> Result<()> {
     background::spawn_heartbeat(state.clone());
 
     let app = crate::api::router(state);
-    let listener = tokio::net::TcpListener::bind(&bind).await.with_context(|| format!("bind {bind}"))?;
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .with_context(|| format!("bind {bind}"))?;
     tracing::info!(%bind, "workdir listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -119,7 +128,10 @@ pub async fn build_state(cfg: Config) -> Result<crate::state::AppState> {
     let runtime: Arc<dyn Runtime> = match cfg.runtime.kind.as_str() {
         "firecracker" => Arc::new(FirecrackerRuntime::new(&cfg.runtime)),
         "mock" => {
-            let allow = std::env::var("WORKDIR_ALLOW_INSECURE_RUNTIME").ok().as_deref() == Some("1");
+            let allow = std::env::var("WORKDIR_ALLOW_INSECURE_RUNTIME")
+                .ok()
+                .as_deref()
+                == Some("1");
             if !allow {
                 anyhow::bail!(
                     "runtime.kind = 'mock' runs untrusted code on the HOST with no isolation and \
@@ -132,7 +144,10 @@ pub async fn build_state(cfg: Config) -> Result<crate::state::AppState> {
                 "INSECURE mock runtime enabled — user code runs on the host with NO isolation. \
                  Development use only."
             );
-            Arc::new(MockRuntime::new(cfg.runtime.workspace_dir.clone(), cfg.runtime.volumes_dir.clone()))
+            Arc::new(MockRuntime::new(
+                cfg.runtime.workspace_dir.clone(),
+                cfg.runtime.volumes_dir.clone(),
+            ))
         }
         other => anyhow::bail!("unknown runtime kind '{other}' (use 'mock' or 'firecracker')"),
     };
@@ -177,7 +192,10 @@ pub async fn build_state(cfg: Config) -> Result<crate::state::AppState> {
     // Sweep sandboxes interrupted by a previous restart before serving.
     match store.reconcile_interrupted(chrono::Utc::now()) {
         Ok(0) => {}
-        Ok(n) => tracing::warn!(count = n, "reconciled interrupted sandboxes from a prior run"),
+        Ok(n) => tracing::warn!(
+            count = n,
+            "reconciled interrupted sandboxes from a prior run"
+        ),
         Err(e) => tracing::error!(error = %e, "startup reconciliation failed"),
     }
 
@@ -235,7 +253,12 @@ fn detect_total_memory_gb() -> f64 {
         if let Ok(text) = std::fs::read_to_string("/proc/meminfo") {
             for line in text.lines() {
                 if let Some(rest) = line.strip_prefix("MemTotal:") {
-                    if let Some(kb) = rest.trim().split_whitespace().next().and_then(|v| v.parse::<f64>().ok()) {
+                    if let Some(kb) = rest
+                        .trim()
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<f64>().ok())
+                    {
                         return kb / 1024.0 / 1024.0;
                     }
                 }
@@ -244,7 +267,10 @@ fn detect_total_memory_gb() -> f64 {
     }
     #[cfg(target_os = "macos")]
     {
-        if let Ok(out) = std::process::Command::new("sysctl").args(["-n", "hw.memsize"]).output() {
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+        {
             if let Ok(bytes) = String::from_utf8_lossy(&out.stdout).trim().parse::<f64>() {
                 return bytes / 1024.0 / 1024.0 / 1024.0;
             }
@@ -256,12 +282,18 @@ fn detect_total_memory_gb() -> f64 {
 fn doctor(cfg: &Config) -> Result<()> {
     println!("workdir doctor");
     println!("  runtime.kind        = {}", cfg.runtime.kind);
-    println!("  /dev/kvm present    = {}", std::path::Path::new("/dev/kvm").exists());
+    println!(
+        "  /dev/kvm present    = {}",
+        std::path::Path::new("/dev/kvm").exists()
+    );
     println!("  detected memory GB  = {:.1}", detect_total_memory_gb());
     println!("  data_dir            = {}", cfg.server.data_dir.display());
     println!("  bind                = {}", cfg.server.bind);
     println!("  public_domain       = {}", cfg.server.public_domain);
-    println!("  base unit price/hr  = {}", cfg.pricing.default_unit_price_usd_hr);
+    println!(
+        "  base unit price/hr  = {}",
+        cfg.pricing.default_unit_price_usd_hr
+    );
     if cfg.runtime.kind == "firecracker" && !std::path::Path::new("/dev/kvm").exists() {
         println!("\nWARNING: runtime=firecracker but /dev/kvm is missing; boots will fail.");
     }

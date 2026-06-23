@@ -14,7 +14,10 @@ pub async fn list(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> ApiResult<Json<Value>> {
-    let recs = state.store.list_secrets(&ctx.org_id).map_err(ApiError::Internal)?;
+    let recs = state
+        .store
+        .list_secrets(&ctx.org_id)
+        .map_err(ApiError::Internal)?;
     let names: Vec<Value> = recs
         .iter()
         .map(|r| json!({ "name": r.name, "created_at": r.created_at, "updated_at": r.updated_at }))
@@ -39,7 +42,9 @@ pub async fn put(
         ));
     }
     if body.value.len() > 64 * 1024 {
-        return Err(ApiError::BadRequest("secret value too large (max 64 KiB)".into()));
+        return Err(ApiError::BadRequest(
+            "secret value too large (max 64 KiB)".into(),
+        ));
     }
     let rec = secrets::encrypt(&state.secret_key, &ctx.org_id, &name, &body.value)
         .map_err(ApiError::Internal)?;
@@ -52,7 +57,10 @@ pub async fn delete(
     Extension(ctx): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    let removed = state.store.delete_secret(&ctx.org_id, &name).map_err(ApiError::Internal)?;
+    let removed = state
+        .store
+        .delete_secret(&ctx.org_id, &name)
+        .map_err(ApiError::Internal)?;
     if !removed {
         return Err(ApiError::NotFound(format!("secret {name}")));
     }

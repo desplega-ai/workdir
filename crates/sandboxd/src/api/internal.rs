@@ -49,11 +49,25 @@ pub fn router(state: AppState) -> Router<AppState> {
 async fn node_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let expected = state.cfg.node.rpc_token.trim();
     if expected.is_empty() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "internal node API disabled (no rpc_token)").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "internal node API disabled (no rpc_token)",
+        )
+            .into_response();
     }
-    let presented = req.headers().get(NODE_TOKEN_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let presented = req
+        .headers()
+        .get(NODE_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     // length-checked constant-ish compare
-    if presented.len() != expected.len() || presented.bytes().zip(expected.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) != 0 {
+    if presented.len() != expected.len()
+        || presented
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |a, (x, y)| a | (x ^ y))
+            != 0
+    {
         return (StatusCode::UNAUTHORIZED, "bad node token").into_response();
     }
     next.run(req).await
@@ -65,7 +79,11 @@ struct PlaceReq {
     snapshot_available: bool,
 }
 async fn place(State(s): State<AppState>, Json(r): Json<PlaceReq>) -> R {
-    let inst = s.local.place(&r.spec, r.snapshot_available).await.map_err(err)?;
+    let inst = s
+        .local
+        .place(&r.spec, r.snapshot_available)
+        .await
+        .map_err(err)?;
     Ok(Json(serde_json::to_value(inst).unwrap()))
 }
 
@@ -97,7 +115,10 @@ struct WriteReq {
 }
 async fn write_file(State(s): State<AppState>, Json(r): Json<WriteReq>) -> R {
     let bytes = unb64(&r.data_b64).map_err(err)?;
-    s.local.write_file(&r.handle, &r.path, &bytes).await.map_err(err)?;
+    s.local
+        .write_file(&r.handle, &r.path, &bytes)
+        .await
+        .map_err(err)?;
     Ok(Json(json!({})))
 }
 
@@ -123,7 +144,10 @@ struct ReadyReq {
     timeout_seconds: u32,
 }
 async fn ready_check(State(s): State<AppState>, Json(r): Json<ReadyReq>) -> R {
-    s.local.ready_check(&r.handle, &r.url, r.timeout_seconds).await.map_err(err)?;
+    s.local
+        .ready_check(&r.handle, &r.url, r.timeout_seconds)
+        .await
+        .map_err(err)?;
     Ok(Json(json!({})))
 }
 
