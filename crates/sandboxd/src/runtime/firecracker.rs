@@ -2065,17 +2065,25 @@ impl Runtime for FirecrackerRuntime {
     }
 
     async fn pause(&self, handle: &str, _persist: bool) -> Result<()> {
-        let sock = {
-            let vms = self.vms.lock().unwrap();
-            vms.get(handle)
-                .map(|v| v.api_sock.clone())
-                .ok_or_else(|| anyhow!("unknown vm {handle}"))?
-        };
-        self.fc_api(&sock, "PATCH", "/vm", &json!({"state": "Paused"}))
-            .await
+        // A raw Firecracker Paused -> Resumed cycle can leave the guest-side
+        // vsock listener wedged even though the VM itself is running. Use the
+        // snapshot-backed standby path for explicit pause as well: public state
+        // remains `stopped`, while the runtime record remembers that resume must
+        // restore the VM into a fresh Firecracker process.
+        self.standby(handle).await.map(|_| ())
     }
 
     async fn resume(&self, handle: &str) -> Result<u64> {
+        self.ensure_record_loaded(handle);
+        let standby = {
+            let vms = self.vms.lock().unwrap();
+            vms.get(handle)
+                .map(|v| v.standby)
+                .ok_or_else(|| anyhow!("unknown vm {handle}"))?
+        };
+        if standby {
+            return self.restore(handle).await;
+        }
         let sock = {
             let vms = self.vms.lock().unwrap();
             vms.get(handle)
