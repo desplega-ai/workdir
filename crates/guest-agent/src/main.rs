@@ -329,19 +329,31 @@ mod pty {
     pub fn spawn(cols: u16, rows: u16, cmd: Option<String>) -> Result<Session, String> {
         let mut master: libc::c_int = -1;
         let mut slave: libc::c_int = -1;
+        #[cfg(target_os = "linux")]
+        let ws = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        #[cfg(not(target_os = "linux"))]
         let mut ws = libc::winsize {
             ws_row: rows,
             ws_col: cols,
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
+        #[cfg(target_os = "linux")]
+        let winp = &ws as *const libc::winsize;
+        #[cfg(not(target_os = "linux"))]
+        let winp = &mut ws as *mut libc::winsize;
         let rc = unsafe {
             libc::openpty(
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut ws,
+                winp,
             )
         };
         if rc != 0 {
