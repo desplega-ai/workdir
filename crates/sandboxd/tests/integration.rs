@@ -33,6 +33,7 @@ fn test_config(data: &std::path::Path) -> Config {
     cfg.runtime.images_dir = data.join("images");
     cfg.runtime.volumes_dir = data.join("volumes");
     cfg.runtime.kernel_image = data.join("kernel/vmlinux").to_string_lossy().to_string();
+    cfg.node.total_memory_gb = 64.0;
     cfg.auth.bootstrap_admin_key = "sk_live_test".into();
     cfg
 }
