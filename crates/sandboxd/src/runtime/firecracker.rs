@@ -41,6 +41,8 @@ use tokio::net::UnixStream;
 
 /// vsock port the in-guest agent listens on (matches the init shim).
 const GUEST_AGENT_VSOCK_PORT: u32 = 5005;
+const GUEST_AGENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const GUEST_AGENT_READY_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(750);
 
 /// In-guest workspace root the file API is confined to.
 const GUEST_WORKSPACE: &str = "/workspace";
@@ -608,17 +610,30 @@ impl FirecrackerRuntime {
             .await
             .with_context(|| format!("connect guest vsock uds {uds:?}"))?;
         // Firecracker host-initiated connection handshake.
-        stream
-            .write_all(format!("CONNECT {GUEST_AGENT_VSOCK_PORT}\n").as_bytes())
-            .await?;
+        tokio::time::timeout(
+            GUEST_AGENT_CONNECT_TIMEOUT,
+            stream.write_all(format!("CONNECT {GUEST_AGENT_VSOCK_PORT}\n").as_bytes()),
+        )
+        .await
+        .context("guest vsock CONNECT write timed out")?
+        .context("write guest vsock CONNECT")?;
         let mut ack = [0u8; 64];
-        let n = stream.read(&mut ack).await?;
+        let n = tokio::time::timeout(GUEST_AGENT_CONNECT_TIMEOUT, stream.read(&mut ack))
+            .await
+            .context("guest vsock CONNECT ack timed out")?
+            .context("read guest vsock CONNECT ack")?;
         let ack_str = String::from_utf8_lossy(&ack[..n]);
         if !ack_str.starts_with("OK") {
             bail!("vsock connect rejected: {ack_str}");
         }
         let line = format!("{}\n", serde_json::to_string(request)?);
-        stream.write_all(line.as_bytes()).await?;
+        tokio::time::timeout(
+            GUEST_AGENT_CONNECT_TIMEOUT,
+            stream.write_all(line.as_bytes()),
+        )
+        .await
+        .context("guest agent request write timed out")?
+        .context("write guest agent request")?;
         // Read one response line.
         let mut buf = Vec::new();
         let mut byte = [0u8; 1];
@@ -648,10 +663,16 @@ impl FirecrackerRuntime {
         let start = Instant::now();
         let mut delay = Duration::from_millis(2);
         loop {
-            if self
-                .agent_call(handle, &json!({"op": "ping"}))
-                .await
-                .is_ok()
+            let elapsed = start.elapsed();
+            let Some(remaining) = timeout.checked_sub(elapsed) else {
+                bail!("guest agent did not become ready within {timeout:?}");
+            };
+            let attempt_timeout = remaining.min(GUEST_AGENT_READY_ATTEMPT_TIMEOUT);
+            if let Ok(Ok(_)) = tokio::time::timeout(
+                attempt_timeout,
+                self.agent_call(handle, &json!({"op": "ping"})),
+            )
+            .await
             {
                 return Ok(start.elapsed().as_millis() as u64);
             }
@@ -2064,6 +2085,9 @@ impl Runtime for FirecrackerRuntime {
         let start = Instant::now();
         self.fc_api(&sock, "PATCH", "/vm", &json!({"state": "Resumed"}))
             .await?;
+        self.await_agent(handle, Duration::from_secs(10))
+            .await
+            .context("guest agent did not become ready after resume")?;
         Ok(start.elapsed().as_millis() as u64)
     }
 
