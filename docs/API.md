@@ -69,10 +69,44 @@ plus `deleting → deleted` and `failed`.
     ],
     "ports": [3000, 6080],
     "ready": { "http": "http://127.0.0.1:3000", "timeout_seconds": 30 },
-    "network": { "egress": "default" }
+    "network": {
+      "egress": "allowlist",
+      "allow": [
+        { "type": "domain", "value": "api.openai.com", "protocol": "tcp", "ports": [443] },
+        "93.184.216.34"
+      ]
+    }
   }
 }
 ```
+
+### Network policy
+
+`startup.network` is create-time only and is enforced by the Firecracker host
+against the sandbox tap. Omit it, or set `{ "egress": "default" }`, to keep the
+backward-compatible default internet egress with baseline metadata/private/SMTP
+blocks.
+
+Modes:
+
+| `egress` | Behavior |
+|---|---|
+| `default` | Current default egress; `allow`/`deny` must be empty. |
+| `none` | Drop all forwarded sandbox egress. |
+| `allowlist` | Allow only `allow` rules; at least one rule required. |
+| `denylist` | Drop `deny` rules and allow the rest; at least one rule required. |
+
+Rules may be shorthand strings (`"93.184.216.34"`, `"203.0.113.0/24"`,
+`"api.example.com"`) or objects:
+
+```json
+{ "type": "domain", "value": "*.example.com", "protocol": "tcp", "ports": [443] }
+```
+
+`type` is `cidr` or `domain`; `protocol` is `tcp` or `udp`; `ports` is optional.
+Domain rules support exact hostnames and one-label wildcards (`*.example.com`).
+URLs, paths, raw `*`, invalid ports, IPv6 rules, and allowlisted private or
+metadata ranges are rejected.
 
 **Constrained knobs (spec §3.2)** — arbitrary values like 13 GB or 250 GB are
 rejected with `400 bad_request`:
@@ -106,6 +140,9 @@ rejected with `400 bad_request`:
   "urls": { "ports": { "3000": "https://sbx_…-3000.<domain>" },
             "vnc": "https://sbx_…-6080.<domain>",
             "cdp": "https://sbx_…-9222.<domain>" },
+  "mounts": [],
+  "volumes": [],
+  "network": { "egress": "default" },
   "price": { "resource_units": 1.0, "image_multiplier": 1.0,
              "unit_price_usd_hr": 0.009, "price_usd_hr": 0.009,
              "price_usd_second": 0.0000025 },
@@ -181,7 +218,13 @@ Added to `POST /v1/sandboxes` (all optional, default-off):
   "mounts": [ { "type": "s3", "bucket": "my-data", "mount_path": "/mnt/data",
                 "read_only": true, "prefix": "p/", "region": "us-east-1" } ],
   "volumes": [ { "volume_id": "vol_...", "mount_path": "/mnt/project" } ],
-  "files":  [ { "path": "config.json", "content": "{}", "encoding": "utf8" } ]
+  "files":  [ { "path": "config.json", "content": "{}", "encoding": "utf8" } ],
+  "startup": {
+    "network": {
+      "egress": "allowlist",
+      "allow": [{ "type": "domain", "value": "api.openai.com", "protocol": "tcp", "ports": [443] }]
+    }
+  }
 }
 ```
 
